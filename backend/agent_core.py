@@ -523,6 +523,15 @@ def build_system_prompt(user_id: int) -> str:
         "in modo breve e concreto. Usa i tool a disposizione per leggere o aggiornare "
         "i dati reali dell'utente: non inventare mai numeri sulle calorie residue o "
         "bruciate, quelli devono sempre venire da get_daily_balance.\n\n"
+        "LUNGHEZZA DELLE RISPOSTE: le tue risposte visibili all'utente non "
+        "devono MAI superare i 1000 caratteri (circa 150-180 parole). Se il "
+        "contenuto naturale sarebbe più lungo (es. un piano pasti "
+        "completo), NON scriverlo tutto: dai un riassunto breve e invita "
+        "l'utente a chiedere il dettaglio specifico che gli serve (es. "
+        "'chiedimi un giorno specifico se vuoi i dettagli'). I dati "
+        "restano comunque salvati per intero nel database anche se la "
+        "tua risposta è breve — non è necessario ripetere tutto in chat "
+        "per \"non perderlo\".\n\n"
         "REGOLA FONDAMENTALE — MAI CHIEDERE CIÒ CHE PUOI GIÀ SAPERE: prima di "
         "chiedere all'utente cosa ha mangiato in un pasto di OGGI (colazione, "
         "pranzo, cena, spuntini), chiama SEMPRE PRIMA list_meals per la data "
@@ -622,9 +631,23 @@ def build_system_prompt(user_id: int) -> str:
         "chiede esplicitamente pasti 'fit'/ad alta proteina, filtra e "
         "preferisci le ricette con 'fit'/'proteic' nel nome o con un "
         "rapporto proteine/calorie alto. Varia le ricette tra un giorno e "
-        "l'altro per rendere il piano sostenibile, poi salva tutto nel "
-        "campo pasti_suggeriti di set_meal_plan (testo strutturato per "
-        "giorno e per pasto, con calorie indicative).\n"
+        "l'altro per rendere il piano sostenibile.\n"
+        "4ter. SALVA SUBITO, POI RIASSUMI BREVEMENTE — regola critica "
+        "anti-spreco: componi il testo COMPLETO del piano (tutti i 7 "
+        "giorni) e chiama set_meal_plan con pasti_suggeriti popolato PRIMA "
+        "di scrivere la tua risposta visibile all'utente. Se ti accorgi "
+        "di aver già generato molto contenuto senza aver ancora chiamato "
+        "set_meal_plan, chiamalo SUBITO con quello che hai composto finora "
+        "(anche solo alcuni giorni), così il lavoro non va perso se lo "
+        "spazio di risposta dovesse esaurirsi. Nella risposta finale "
+        "all'utente NON ripetere l'intero piano giorno per giorno: sarebbe "
+        "uno spreco enorme di token, dato che il piano resta comunque "
+        "consultabile in ogni momento (es. 'cosa mangiamo lunedì?', "
+        "'fammi vedere il piano'). Dai invece una conferma BREVE (3-5 "
+        "frasi): che il piano settimanale è stato salvato, il target "
+        "medio giornaliero (calorie e macro), un solo esempio (es. il "
+        "menu di oggi) a titolo di assaggio, e invita l'utente a chiedere "
+        "un giorno specifico se vuole vedere il resto.\n"
         "4bis. COORDINAMENTO PASTI IN FAMIGLIA: prima di comporre il piano "
         "di ogni giorno, chiama get_household_members. Se l'utente ha "
         "familiari collegati, guarda il campo sincronizza_tutti_pasti "
@@ -1189,6 +1212,26 @@ def _execute_tool_logged(name: str, tool_input: dict) -> dict:
     return result
 
 
+MAX_RISPOSTA_CARATTERI = 1000
+
+
+def _limita_lunghezza(testo: str, max_caratteri: int = MAX_RISPOSTA_CARATTERI) -> str:
+    """
+    Taglia la risposta finale a un massimo di caratteri, tagliando all'ultimo
+    spazio utile per non spezzare una parola a metà. Applicata a tutti e tre
+    i motori (Gemini, Groq, Claude) come rete di sicurezza indipendente
+    dall'istruzione data nel system prompt, che da sola non è garantita al
+    100% (i modelli non seguono sempre alla lettera i vincoli di lunghezza).
+    """
+    if len(testo) <= max_caratteri:
+        return testo
+    tagliato = testo[:max_caratteri]
+    ultimo_spazio = tagliato.rfind(" ")
+    if ultimo_spazio > max_caratteri * 0.8:
+        tagliato = tagliato[:ultimo_spazio]
+    return tagliato.rstrip() + "… (risposta accorciata per restare concisa — chiedi pure di continuare)"
+
+
 def _is_transient_error(exc: Exception) -> bool:
     """
     Riconosce errori temporanei di Gemini (es. 503 "modello sovraccarico",
@@ -1274,6 +1317,7 @@ def run_turn_groq(user_text: str, system_prompt: str) -> str:
                 "messages": messages,
                 "tools": GROQ_TOOLS,
                 "tool_choice": "auto",
+                "max_tokens": 4096,
             }
         )
         message = data["choices"][0]["message"]
@@ -1281,7 +1325,7 @@ def run_turn_groq(user_text: str, system_prompt: str) -> str:
 
         tool_calls = message.get("tool_calls")
         if not tool_calls:
-            return message.get("content") or ""
+            return _limita_lunghezza(message.get("content") or "")
 
         for tool_call in tool_calls:
             name = tool_call["function"]["name"]
@@ -1314,7 +1358,7 @@ def _claude_create_with_retry(messages: list, system_blocks: list):
         try:
             return claude_client.messages.create(
                 model=CLAUDE_MODEL,
-                max_tokens=1500,
+                max_tokens=4096,
                 system=system_blocks,
                 tools=ANTHROPIC_TOOLS,
                 messages=messages,
@@ -1367,7 +1411,7 @@ def run_turn_claude(user_text: str, system_prompt: str) -> str:
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
         if not tool_use_blocks:
             testo = "".join(b.text for b in response.content if b.type == "text")
-            return testo
+            return _limita_lunghezza(testo)
 
         risultati_tool = []
         for blocco in tool_use_blocks:
@@ -1444,7 +1488,7 @@ def run_turn(contents: list, system_prompt: str, user_text: str | None = None) -
             final_text = "".join(
                 part.text for part in candidate.content.parts if part.text
             )
-            return contents, final_text
+            return contents, _limita_lunghezza(final_text)
 
         response_parts = []
         for call in function_calls:
