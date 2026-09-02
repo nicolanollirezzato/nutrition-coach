@@ -159,6 +159,56 @@ LOG_ACTIVITY = {
     },
 }
 
+LIST_MEALS = {
+    "name": "list_meals",
+    "description": (
+        "Restituisce l'elenco dei pasti registrati per l'utente in una data "
+        "(oggi se omessa), con id, nome, calorie, macronutrienti e orario di "
+        "ciascuno. USA SEMPRE questo tool — invece di chiedere all'utente "
+        "quale fosse l'ultimo pasto — quando l'utente chiede di ricalcolare, "
+        "correggere o modificare un pasto già registrato. Il pasto più "
+        "recente è quello con l'orario più tardo nell'elenco."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_id": {"type": "integer"},
+            "giorno": {
+                "type": "string",
+                "description": "Data in formato YYYY-MM-DD. Se omessa, si intende oggi.",
+            },
+        },
+        "required": ["user_id"],
+    },
+}
+
+UPDATE_MEAL = {
+    "name": "update_meal",
+    "description": (
+        "Aggiorna un pasto GIÀ registrato (nome, calorie e/o macronutrienti), "
+        "usando il suo id ottenuto da list_meals. Usa questo tool — e non "
+        "log_meal — quando devi correggere/ricalcolare un pasto esistente: "
+        "creare un nuovo pasto con log_meal invece di aggiornare quello "
+        "esistente lo conteggerebbe due volte nel bilancio calorico "
+        "giornaliero. Passa solo i campi che vuoi effettivamente cambiare."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "meal_id": {
+                "type": "integer",
+                "description": "Id del pasto da correggere, ottenuto da list_meals",
+            },
+            "nome_alimento": {"type": "string"},
+            "calorie": {"type": "number"},
+            "proteine_g": {"type": "number"},
+            "carboidrati_g": {"type": "number"},
+            "grassi_g": {"type": "number"},
+        },
+        "required": ["meal_id"],
+    },
+}
+
 LOG_WEIGHT = {
     "name": "log_weight",
     "description": (
@@ -272,6 +322,8 @@ RAW_TOOL_DEFINITIONS = [
     SEARCH_FOOD_NUTRITION,
     LOG_MEAL,
     LOG_ACTIVITY,
+    LIST_MEALS,
+    UPDATE_MEAL,
     LOG_WEIGHT,
     GET_WEIGHT_HISTORY,
     GET_MEAL_PLAN,
@@ -319,6 +371,21 @@ def build_system_prompt(user_id: int) -> str:
         "in modo breve e concreto. Usa i tool a disposizione per leggere o aggiornare "
         "i dati reali dell'utente: non inventare mai numeri sulle calorie residue o "
         "bruciate, quelli devono sempre venire da get_daily_balance.\n\n"
+        "REGOLA FONDAMENTALE — MAI CHIEDERE CIÒ CHE PUOI GIÀ SAPERE: prima di "
+        "chiedere all'utente cosa ha mangiato in un pasto di OGGI (colazione, "
+        "pranzo, cena, spuntini), chiama SEMPRE PRIMA list_meals per la data "
+        "odierna. Se un pasto per quella fascia risulta già registrato "
+        "(anche se non lo ricordi dalla conversazione attuale — potrebbe "
+        "essere stato registrato in un turno precedente, in una sessione "
+        "precedente, o da un provider AI diverso che non condivide la "
+        "cronologia), USA QUEI DATI direttamente, senza richiederli di "
+        "nuovo. Non fidarti solo della cronologia della conversazione: "
+        "verifica sempre col database, che è la fonte di verità. Chiedi "
+        "solo se list_meals conferma che per quel pasto/oggi non c'è "
+        "davvero nulla di registrato. Questo vale anche quando l'utente "
+        "chiede di 'ricalcolare il piano in base al pranzo di oggi' o "
+        "simili: controlla prima se il pranzo è già lì, non ripartire da "
+        "zero chiedendolo.\n\n"
         "IMPORTANTE: se il risultato di un tool contiene una chiave 'errore', NON "
         "interpretarlo come 'nessun dato trovato' — riporta all'utente il messaggio "
         "di errore esatto che hai ricevuto, così può essere risolto. Un errore "
@@ -416,12 +483,33 @@ def build_system_prompt(user_id: int) -> str:
         "modifica e il perché, non silenziosamente.\n"
         "4. Non correggere il piano sulla base di un singolo giorno: servono "
         "più giorni/settimane di dati per un trend affidabile.\n\n"
+        "RICALCOLO/CORREZIONE DI UN PASTO GIÀ REGISTRATO — quando l'utente "
+        "chiede di ricalcolare, correggere o aggiornare le calorie di un "
+        "pasto (es. 'ricalcola l'ultimo pasto', 'in realtà la porzione era "
+        "più grande', 'correggi quello di prima'):\n"
+        "1. NON chiedere all'utente quale fosse il pasto o i suoi dettagli "
+        "se ha già registrato qualcosa oggi — chiama SEMPRE prima list_meals "
+        "per la data di oggi (o quella indicata) per vederlo da solo.\n"
+        "2. Se list_meals restituisce un solo pasto recente pertinente, è "
+        "quello a cui l'utente si riferisce (di solito l'ultimo per "
+        "orario). Se ce ne sono più di uno plausibili e non è ovvio a "
+        "quale si riferisca, allora sì chiedi chiarimento.\n"
+        "3. Ricalcola i valori corretti (con search_food_nutrition se serve "
+        "maggiore precisione, tenendo conto della correzione indicata "
+        "dall'utente, es. porzione più grande).\n"
+        "4. Aggiorna quella stessa entry con update_meal passando il suo "
+        "id — NON usare log_meal per la correzione, altrimenti il pasto "
+        "verrebbe contato due volte nel bilancio del giorno.\n\n"
         "RIADATTAMENTO IN TEMPO REALE (giornaliero) — quando l'utente ti dice "
         "cosa ha mangiato (specialmente se fuori piano, una porzione più "
-        "grande, un pasto saltato) e vuoi/deve aiutarlo a restare in linea "
-        "per il resto della giornata:\n"
-        "1. Dopo aver registrato il pasto con log_meal, chiama "
-        "get_daily_balance per il giorno corrente: ora include anche i "
+        "grande, un pasto saltato), o ti chiede di ricalcolare/adattare i "
+        "pasti restanti in base a un pasto già fatto oggi:\n"
+        "0. Se il pasto in questione non è nel messaggio attuale (es. "
+        "'ricalcola in base al pranzo di oggi'), applica la REGOLA "
+        "FONDAMENTALE vista sopra: controlla con list_meals prima di "
+        "chiedere, invece di richiedere all'utente di ridescriverlo.\n"
+        "1. Se invece il pasto viene descritto ora, registralo con log_meal, poi "
+        "chiama get_daily_balance per il giorno corrente: ora include anche i "
         "residui di proteine/carboidrati/grassi, non solo le calorie.\n"
         "2. Chiama get_meal_plan per vedere i pasti ancora da fare oggi "
         "(usa la sezione del giorno della settimana corrente).\n"
@@ -578,6 +666,60 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                 "calorie_attive_bruciate": activity.calorie_attive_bruciate,
                 "passi": activity.passi,
                 "minuti_allenamento": activity.minuti_allenamento,
+            }
+        finally:
+            db.close()
+
+    if name == "list_meals":
+        db = SessionLocal()
+        try:
+            giorno = (
+                date.fromisoformat(tool_input["giorno"])
+                if tool_input.get("giorno")
+                else date.today()
+            )
+            meals = crud.list_meals_for_day(db, tool_input["user_id"], giorno)
+            if not meals:
+                return {"pasti": [], "nota": "Nessun pasto registrato in questa data"}
+            return {
+                "pasti": [
+                    {
+                        "id": m.id,
+                        "nome_alimento": m.nome_alimento,
+                        "calorie": m.calorie,
+                        "proteine_g": m.proteine_g,
+                        "carboidrati_g": m.carboidrati_g,
+                        "grassi_g": m.grassi_g,
+                        "orario": m.orario.isoformat(),
+                        "aggiornato_at": m.aggiornato_at.isoformat(),
+                        "fonte": m.fonte,
+                    }
+                    for m in meals
+                ]
+            }
+        finally:
+            db.close()
+
+    if name == "update_meal":
+        db = SessionLocal()
+        try:
+            update_in = schemas.MealUpdate(
+                nome_alimento=tool_input.get("nome_alimento"),
+                calorie=tool_input.get("calorie"),
+                proteine_g=tool_input.get("proteine_g"),
+                carboidrati_g=tool_input.get("carboidrati_g"),
+                grassi_g=tool_input.get("grassi_g"),
+            )
+            meal = crud.update_meal(db, int(tool_input["meal_id"]), update_in)
+            if meal is None:
+                return {"errore": f"Nessun pasto trovato con id {tool_input['meal_id']}"}
+            return {
+                "id": meal.id,
+                "nome_alimento": meal.nome_alimento,
+                "calorie": meal.calorie,
+                "proteine_g": meal.proteine_g,
+                "carboidrati_g": meal.carboidrati_g,
+                "grassi_g": meal.grassi_g,
             }
         finally:
             db.close()

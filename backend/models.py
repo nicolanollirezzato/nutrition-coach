@@ -82,6 +82,7 @@ class Meal(Base):
     grassi_g = Column(Float, nullable=True)
 
     orario = Column(DateTime, default=datetime.utcnow)
+    aggiornato_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     fonte = Column(String, nullable=False, default="manuale")  # "manuale" | "agente"
 
     user = relationship("User", back_populates="meals")
