@@ -115,7 +115,9 @@ def join_household_by_name(
     elif user.household_id is not None:
         altro.household_id = user.household_id
     else:
-        nuova_famiglia = models.Household(nome=f"Famiglia di {altro.nome}")
+        nuova_famiglia = models.Household(
+            nome=f"Famiglia di {altro.nome}", sincronizza_tutti_pasti=True
+        )
         db.add(nuova_famiglia)
         db.flush()  # assegna l'id senza chiudere la transazione
         user.household_id = nuova_famiglia.id
@@ -421,11 +423,13 @@ def upsert_meal_plan(
 
 # ---------- Ricette ----------
 
-def list_recipes(db: Session, categoria: str | None = None) -> list[models.Recipe]:
+def list_recipes(
+    db: Session, categoria: str | None = None, limite: int = 10
+) -> list[models.Recipe]:
     query = db.query(models.Recipe)
     if categoria:
         query = query.filter(models.Recipe.categoria == categoria)
-    return query.all()
+    return query.limit(limite).all()
 
 
 def get_recipe(db: Session, recipe_id: int) -> models.Recipe | None:

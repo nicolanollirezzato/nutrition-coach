@@ -321,11 +321,17 @@ SEARCH_RECIPES = {
     "name": "search_recipes",
     "description": (
         "Cerca ricette nella libreria salvata, filtrando per categoria "
-        "(colazione/pranzo/cena/spuntino). Restituisce nome, id e valori "
-        "nutrizionali per la porzione BASE di ciascuna. USA QUESTO quando "
-        "componi o rivedi un piano pasti: preferisci prendere spunto da "
-        "ricette reali della libreria invece di improvvisare sempre da "
-        "zero, quando ce n'è una adatta per quella fascia/categoria."
+        "(colazione/pranzo/cena/spuntino). Restituisce GIÀ gli ingredienti "
+        "completi con quantità base di ogni ricetta trovata (non serve "
+        "chiamare get_recipe dopo, a meno che tu debba rileggere una "
+        "ricetta specifica in un turno successivo). USO EFFICIENTE — "
+        "IMPORTANTE PER RISPARMIARE CHIAMATE: quando componi un piano "
+        "SETTIMANALE, chiama questo tool UNA SOLA VOLTA PER CATEGORIA "
+        "(quindi al massimo 4 chiamate totali: colazione, pranzo, cena, "
+        "spuntino), con limite alto (es. 15-20), e poi scegli ricette "
+        "diverse per ciascuno dei 7 giorni PRENDENDOLE DA QUELLO STESSO "
+        "RISULTATO — non richiamare questo tool separatamente per ogni "
+        "singolo giorno o pasto, sarebbe uno spreco enorme di chiamate."
     ),
     "parameters": {
         "type": "object",
@@ -333,6 +339,10 @@ SEARCH_RECIPES = {
             "categoria": {
                 "type": "string",
                 "description": "Una tra: colazione, pranzo, cena, spuntino. Se omessa, restituisce tutte.",
+            },
+            "limite": {
+                "type": "integer",
+                "description": "Quante ricette restituire al massimo (default 10, usa 15-20 quando componi un piano settimanale)",
             },
         },
     },
@@ -632,21 +642,28 @@ def build_system_prompt(user_id: int) -> str:
         "4. Se l'utente chiede anche pasti concreti (colazione/pranzo/cena/"
         "spuntini) e non solo i numeri target, componi un piano pasti "
         "SETTIMANALE (7 giorni diversi, non lo stesso ripetuto) che ogni "
-        "giorno sommi circa a calorie_target. REGOLA DI PRIORITÀ per ogni "
-        "pasto: chiama SEMPRE PRIMA search_recipes per quella categoria. "
-        "La libreria contiene centinaia di ricette (comprese molte 'fit', "
-        "più proteiche): usa quelle come prima scelta, non come eccezione. "
-        "Se trovi almeno una ricetta adatta, chiama get_recipe e SCALA le "
-        "quantità in proporzione al target di quel pasto (es. ricetta base "
-        "500 kcal, pasto target 650 kcal -> moltiplica ogni ingrediente e "
-        "i macro per 650/500). Componi un pasto da zero con "
-        "search_food_nutrition SOLO se search_recipes non restituisce "
-        "nulla di adatto per quella categoria/esigenza (es. l'utente ha "
-        "chiesto qualcosa che nessuna ricetta salvata copre). Se l'utente "
-        "chiede esplicitamente pasti 'fit'/ad alta proteina, filtra e "
-        "preferisci le ricette con 'fit'/'proteic' nel nome o con un "
-        "rapporto proteine/calorie alto. Varia le ricette tra un giorno e "
-        "l'altro per rendere il piano sostenibile.\n"
+        "giorno sommi circa a calorie_target. REGOLA DI PRIORITÀ ED "
+        "EFFICIENZA — fondamentale per non sprecare chiamate: chiama "
+        "search_recipes UNA SOLA VOLTA PER CATEGORIA (max 4 chiamate "
+        "totali: colazione, pranzo, cena, spuntino), con limite=15 o 20, "
+        "PRIMA di iniziare a scrivere il piano. Il risultato include già "
+        "gli ingredienti completi di ogni ricetta (non serve chiamare "
+        "get_recipe di nuovo). Poi, per tutti e 7 i giorni, scegli ricette "
+        "DIVERSE prendendole da quei 4 risultati già ottenuti — non "
+        "richiamare search_recipes per ogni giorno o per ogni pasto "
+        "singolo, sarebbe uno spreco enorme di chiamate e di costo. Se "
+        "trovi almeno una ricetta adatta, SCALA le quantità in proporzione "
+        "al target di quel pasto (es. ricetta base 500 kcal, pasto target "
+        "650 kcal -> moltiplica ogni ingrediente e i macro per 650/500). "
+        "Componi un pasto da zero con search_food_nutrition SOLO se nessun "
+        "risultato di search_recipes è adatto per quella categoria/"
+        "esigenza. Se l'utente chiede esplicitamente pasti 'fit'/ad alta "
+        "proteina, filtra e preferisci le ricette con 'fit'/'proteic' nel "
+        "nome o con un rapporto proteine/calorie alto. get_recipe resta "
+        "utile per rileggere gli ingredienti di UNA ricetta specifica in "
+        "un turno successivo (es. per la lista della spesa, se non è più "
+        "visibile nel contesto attuale) — non per la composizione iniziale "
+        "del piano.\n"
         "4ter. SALVA SUBITO, POI RIASSUMI BREVEMENTE — regola critica "
         "anti-spreco: componi il testo COMPLETO del piano (tutti i 7 "
         "giorni) e chiama set_meal_plan con pasti_suggeriti popolato PRIMA "
@@ -1102,7 +1119,8 @@ def execute_tool(name: str, tool_input: dict) -> dict:
     if name == "search_recipes":
         db = SessionLocal()
         try:
-            ricette = crud.list_recipes(db, tool_input.get("categoria"))
+            limite = int(tool_input.get("limite", 10))
+            ricette = crud.list_recipes(db, tool_input.get("categoria"), limite)
             if not ricette:
                 return {"ricette": [], "nota": "Nessuna ricetta trovata per questa categoria"}
             return {
@@ -1111,6 +1129,7 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                         "id": r.id,
                         "nome": r.nome,
                         "categoria": r.categoria,
+                        "ingredienti_base": r.ingredienti,
                         "calorie_base": r.calorie_base,
                         "proteine_base_g": r.proteine_base_g,
                         "carboidrati_base_g": r.carboidrati_base_g,
