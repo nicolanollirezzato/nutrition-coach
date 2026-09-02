@@ -397,6 +397,45 @@ SET_USER_PROFILE = {
     },
 }
 
+JOIN_HOUSEHOLD = {
+    "name": "join_household",
+    "description": (
+        "Collega l'utente corrente allo stesso nucleo familiare di un "
+        "altro utente esistente, identificato per nome (es. 'sono il "
+        "marito di Nicola, collegami'). Da questo momento condivideranno "
+        "la lista della spesa e potranno avere la stessa cena coordinata. "
+        "Non fonde nessun dato personale: ognuno mantiene il proprio "
+        "peso, obiettivo e piano."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_id": {"type": "integer"},
+            "nome_altro_membro": {
+                "type": "string",
+                "description": "Nome della persona a cui collegarsi, come indicato dall'utente",
+            },
+        },
+        "required": ["user_id", "nome_altro_membro"],
+    },
+}
+
+GET_HOUSEHOLD_MEMBERS = {
+    "name": "get_household_members",
+    "description": (
+        "Restituisce gli altri membri del nucleo familiare dell'utente "
+        "(id e nome), se presente. Lista vuota se l'utente non è collegato "
+        "a nessuna famiglia. USA SEMPRE questo prima di generare la lista "
+        "della spesa o comporre la cena, per sapere se coordinare con "
+        "altri membri."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"user_id": {"type": "integer"}},
+        "required": ["user_id"],
+    },
+}
+
 RAW_TOOL_DEFINITIONS = [
     GET_DAILY_BALANCE,
     SEARCH_FOOD_NUTRITION,
@@ -412,6 +451,8 @@ RAW_TOOL_DEFINITIONS = [
     GET_RECIPE,
     GET_USER_PROFILE,
     SET_USER_PROFILE,
+    JOIN_HOUSEHOLD,
+    GET_HOUSEHOLD_MEMBERS,
 ]
 
 # Formato per Gemini (google-genai)
@@ -557,6 +598,19 @@ def build_system_prompt(user_id: int) -> str:
         "l'altro per rendere il piano sostenibile, poi salva tutto nel "
         "campo pasti_suggeriti di set_meal_plan (testo strutturato per "
         "giorno e per pasto, con calorie indicative).\n"
+        "4bis. COORDINAMENTO CENA IN FAMIGLIA: prima di comporre la cena "
+        "di ogni giorno, chiama get_household_members. Se l'utente ha "
+        "familiari collegati, chiama get_meal_plan per ciascuno e guarda "
+        "se hanno già una cena pianificata per quel giorno che cita il "
+        "nome di una ricetta della libreria. Se sì, usa la STESSA ricetta "
+        "per la cena di questo utente (comodo per cucinare un solo piatto "
+        "in famiglia), scalando le quantità al SUO target calorico "
+        "individuale (diverso da quello degli altri membri). Se nessun "
+        "familiare ha ancora una cena pianificata per quel giorno, scegli "
+        "tu una ricetta normalmente e menzionalo nella nota del pasto, "
+        "così gli altri membri della famiglia potranno riprenderla quando "
+        "comporranno il loro piano. Questo si applica solo alla cena, non "
+        "necessariamente agli altri pasti.\n"
         "5. Ricorda sempre che non sei un medico o un nutrizionista: per "
         "condizioni mediche, gravidanza, disturbi alimentari o esigenze "
         "particolari, l'utente deve rivolgersi a un professionista — dillo "
@@ -577,25 +631,43 @@ def build_system_prompt(user_id: int) -> str:
         "l'utente chiede di un altro giorno (es. 'cosa mangio venerdì?'), "
         "usa quel giorno invece di oggi. Se non esiste ancora un piano "
         "pasti concreto, dillo e offriti di crearne uno.\n\n"
+        "NUCLEO FAMILIARE — collegare più utenti:\n"
+        "Quando l'utente dice di voler collegarsi a un familiare già "
+        "registrato (es. 'sono il marito di Nicola, collegami', 'unisciti "
+        "alla famiglia di Anna'), chiama join_household con il nome "
+        "indicato. Se il tool restituisce un errore per nome ambiguo o "
+        "non trovato, chiedi di specificare meglio. Dopo il collegamento, "
+        "spiega che da ora condividerete la lista della spesa e potrete "
+        "avere la stessa cena coordinata, ma che peso/obiettivo/piano "
+        "restano comunque individuali. All'inizio di una richiesta di "
+        "lista della spesa o di composizione del piano, chiama sempre "
+        "get_household_members per sapere se l'utente ha familiari "
+        "collegati.\n\n"
         "LISTA DELLA SPESA:\n"
         "Quando l'utente chiede la lista della spesa (es. 'fammi la lista "
         "della spesa', 'cosa devo comprare per la settimana'):\n"
-        "1. Chiama get_meal_plan per leggere pasti_suggeriti.\n"
-        "2. Se non esiste un piano pasti concreto, dillo e offriti prima di "
-        "crearne uno (senza quello non puoi generare una lista sensata).\n"
-        "3. Il piano copre già 7 giorni diversi: somma gli ingredienti di "
+        "1. Chiama get_household_members. Se ci sono membri collegati, "
+        "chiama get_meal_plan anche per ciascuno di loro (oltre al "
+        "richiedente) e costruisci UNA lista unica per tutta la famiglia, "
+        "sommando gli ingredienti di tutti i piani insieme — non liste "
+        "separate. Se non ci sono membri, procedi solo col proprio piano.\n"
+        "2. Chiama get_meal_plan per leggere pasti_suggeriti (del "
+        "richiedente e di eventuali membri).\n"
+        "3. Se non esiste un piano pasti concreto (né per il richiedente "
+        "né per i membri), dillo e offriti prima di crearne uno.\n"
+        "4. Il piano copre già 7 giorni diversi: somma gli ingredienti di "
         "tutti i giorni presenti nel piano (non moltiplicare per 7, il "
         "piano NON si ripete uguale ogni giorno).\n"
-        "4. Consolida gli ingredienti uguali o molto simili sommando le "
-        "quantità (es. se il pollo compare in più giorni, sommalo in una "
-        "sola voce).\n"
-        "5. Presenta la lista organizzata per categoria (es. Proteine, "
+        "5. Consolida gli ingredienti uguali o molto simili sommando le "
+        "quantità (es. se il pollo compare in più giorni o per più "
+        "persone della famiglia, sommalo in una sola voce).\n"
+        "6. Presenta la lista organizzata per categoria (es. Proteine, "
         "Carboidrati/cereali, Frutta e verdura, Latticini, Dispensa/altro), "
         "con quantità totali arrotondate in modo pratico per la spesa (es. "
         "'circa 1.2 kg' invece di '1173g').\n"
-        "6. Ricorda che è una stima basata sul piano: l'utente può avere "
+        "7. Ricorda che è una stima basata sul piano: l'utente può avere "
         "già alcuni ingredienti in casa, quindi la lista va adattata.\n"
-        "7. Dato che il piano è composto PRIORITARIAMENTE da ricette della "
+        "8. Dato che il piano è composto PRIORITARIAMENTE da ricette della "
         "libreria (vedi regola di priorità sopra), per ogni pasto del "
         "piano che corrisponde a una ricetta chiama get_recipe per "
         "ottenere gli ingredienti esatti con le quantità — questa è la "
@@ -1012,6 +1084,28 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                 "sesso": user.sesso,
                 "livello_attivita": user.livello_attivita,
             }
+        finally:
+            db.close()
+
+    if name == "join_household":
+        db = SessionLocal()
+        try:
+            user, errore = crud.join_household_by_name(
+                db, tool_input["user_id"], tool_input["nome_altro_membro"]
+            )
+            if errore:
+                return {"errore": errore}
+            return {"household_id": user.household_id, "collegato_a": tool_input["nome_altro_membro"]}
+        finally:
+            db.close()
+
+    if name == "get_household_members":
+        db = SessionLocal()
+        try:
+            membri = crud.get_household_members(db, tool_input["user_id"])
+            if not membri:
+                return {"membri": [], "nota": "L'utente non fa parte di nessun nucleo familiare"}
+            return {"membri": [{"id": m.id, "nome": m.nome} for m in membri]}
         finally:
             db.close()
 

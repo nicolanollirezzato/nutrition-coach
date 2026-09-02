@@ -79,6 +79,68 @@ def update_user_profile(
     return user
 
 
+# ---------- Nucleo familiare ----------
+
+def find_users_by_name(db: Session, nome: str) -> list[models.User]:
+    """Ricerca case-insensitive per nome — usata per collegare due utenti alla stessa famiglia."""
+    return db.query(models.User).filter(models.User.nome.ilike(f"%{nome}%")).all()
+
+
+def join_household_by_name(
+    db: Session, user_id: int, nome_altro_membro: str
+) -> tuple[models.User | None, str | None]:
+    """
+    Collega user_id allo stesso nucleo familiare di un utente trovato per
+    nome. Ritorna (utente_aggiornato, messaggio_errore) — solo uno dei due
+    è valorizzato. Se esiste già una famiglia (di uno dei due), la riusa;
+    altrimenti ne crea una nuova.
+    """
+    user = get_user(db, user_id)
+    if user is None:
+        return None, f"Utente {user_id} non trovato"
+
+    candidati = find_users_by_name(db, nome_altro_membro)
+    candidati = [c for c in candidati if c.id != user_id]
+
+    if not candidati:
+        return None, f"Nessun utente trovato con nome simile a '{nome_altro_membro}'"
+    if len(candidati) > 1:
+        nomi = ", ".join(f"{c.nome} (id {c.id})" for c in candidati)
+        return None, f"Trovati più utenti con nome simile: {nomi}. Chiedi di specificare l'id esatto."
+
+    altro = candidati[0]
+
+    if altro.household_id is not None:
+        user.household_id = altro.household_id
+    elif user.household_id is not None:
+        altro.household_id = user.household_id
+    else:
+        nuova_famiglia = models.Household(nome=f"Famiglia di {altro.nome}")
+        db.add(nuova_famiglia)
+        db.flush()  # assegna l'id senza chiudere la transazione
+        user.household_id = nuova_famiglia.id
+        altro.household_id = nuova_famiglia.id
+
+    db.commit()
+    db.refresh(user)
+    return user, None
+
+
+def get_household_members(db: Session, user_id: int) -> list[models.User]:
+    """
+    Restituisce gli ALTRI membri del nucleo familiare dell'utente (esclude
+    se stesso). Lista vuota se l'utente non fa parte di nessuna famiglia.
+    """
+    user = get_user(db, user_id)
+    if user is None or user.household_id is None:
+        return []
+    return (
+        db.query(models.User)
+        .filter(models.User.household_id == user.household_id, models.User.id != user_id)
+        .all()
+    )
+
+
 
 # ---------- Activity ----------
 

@@ -25,6 +25,23 @@ from sqlalchemy.orm import relationship
 from database import Base
 
 
+class Household(Base):
+    """
+    Nucleo familiare: collega più utenti per condividere la lista della
+    spesa e coordinare i pasti (es. la stessa cena per tutta la famiglia,
+    con quantità scalate individualmente). Non fonde nessun dato personale:
+    ogni utente mantiene il proprio peso, obiettivo e piano.
+    """
+
+    __tablename__ = "households"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String, nullable=True)
+    creato_at = Column(DateTime, default=datetime.utcnow)
+
+    membri = relationship("User", back_populates="household")
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -47,8 +64,12 @@ class User(Base):
     sesso = Column(String, nullable=True)  # "M" | "F"
     livello_attivita = Column(String, nullable=True)  # es. "moderatamente attivo"
 
+    # Nucleo familiare collegato, se presente (NULL = utente indipendente)
+    household_id = Column(Integer, ForeignKey("households.id"), nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    household = relationship("Household", back_populates="membri")
     daily_activities = relationship("DailyActivity", back_populates="user")
     meals = relationship("Meal", back_populates="user")
     weight_entries = relationship("WeightEntry", back_populates="user")
