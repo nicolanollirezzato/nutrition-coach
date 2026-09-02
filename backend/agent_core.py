@@ -204,12 +204,16 @@ SET_MEAL_PLAN = {
     "name": "set_meal_plan",
     "description": (
         "Crea o aggiorna il piano alimentare attivo dell'utente: obiettivo "
-        "calorico giornaliero e target di macronutrienti. Usa questo tool "
-        "quando definisci un piano per la prima volta o quando lo correggi "
-        "in base ai progressi (peso, aderenza alle calorie). Non proporre "
-        "MAI un target sotto le 1200 kcal/giorno, a meno che l'utente non "
-        "abbia esplicitamente detto di essere seguito da un medico o "
-        "nutrizionista per un piano più aggressivo."
+        "calorico giornaliero, target di macronutrienti e, opzionalmente, "
+        "un piano pasti concreto (colazione/pranzo/cena/spuntini). Usa "
+        "questo tool quando definisci un piano per la prima volta, quando "
+        "lo correggi in base ai progressi, o quando l'utente chiede di "
+        "rivedere/cambiare i pasti suggeriti. Includi sempre calorie_target "
+        "anche se stai modificando solo i pasti suggeriti (rileggi il "
+        "valore attuale con get_meal_plan se non lo stai cambiando). Non "
+        "proporre MAI un target sotto le 1200 kcal/giorno, a meno che "
+        "l'utente non abbia esplicitamente detto di essere seguito da un "
+        "medico o nutrizionista per un piano più aggressivo."
     ),
     "parameters": {
         "type": "object",
@@ -226,6 +230,16 @@ SET_MEAL_PLAN = {
             "proteine_target_g": {"type": "number"},
             "carboidrati_target_g": {"type": "number"},
             "grassi_target_g": {"type": "number"},
+            "pasti_suggeriti": {
+                "type": "string",
+                "description": (
+                    "Piano pasti concreto in testo strutturato, es. "
+                    "'Colazione: 40g avena + 200ml latte + 1 banana (~350 kcal)\\n"
+                    "Pranzo: 150g petto di pollo + 80g riso + verdure (~550 kcal)\\n"
+                    "Cena: ...\\nSpuntini: ...'. Componi porzioni realistiche "
+                    "che sommate si avvicinino a calorie_target."
+                ),
+            },
             "note": {
                 "type": "string",
                 "description": "Eventuali note sul piano o sul perché è stato corretto",
@@ -293,10 +307,53 @@ def build_system_prompt(user_id: int) -> str:
         "adeguate a preservare la massa magra, orientativamente 1.6-2g per "
         "kg di peso corporeo, il resto diviso tra carboidrati e grassi).\n"
         "3. Salva il piano con set_meal_plan.\n"
-        "4. Ricorda sempre che non sei un medico o un nutrizionista: per "
+        "4. Se l'utente chiede anche pasti concreti (colazione/pranzo/cena/"
+        "spuntini) e non solo i numeri target, componi un piano pasti "
+        "realistico che sommato si avvicini a calorie_target: usa "
+        "search_food_nutrition per alimenti reali con quantità precise, poi "
+        "salvalo nel campo pasti_suggeriti di set_meal_plan (testo "
+        "strutturato per pasto, con calorie indicative per ciascuno).\n"
+        "5. Ricorda sempre che non sei un medico o un nutrizionista: per "
         "condizioni mediche, gravidanza, disturbi alimentari o esigenze "
         "particolari, l'utente deve rivolgersi a un professionista — dillo "
         "esplicitamente quando proponi un piano per la prima volta.\n\n"
+        "Quando l'utente chiede di vedere il piano pasti attuale, chiama "
+        "get_meal_plan e presenta pasti_suggeriti in modo leggibile (se "
+        "presente); se non esiste ancora un piano pasti concreto, offriti "
+        "di crearne uno.\n\n"
+        "CONSULTAZIONE RAPIDA (es. 'cosa mangiamo stasera?', 'cosa c'è a "
+        "pranzo oggi?'):\n"
+        "Chiama get_meal_plan e rispondi SOLO con la parte pertinente di "
+        "pasti_suggeriti (es. solo la cena se chiede 'stasera', solo il "
+        "pranzo se chiede 'a pranzo'), senza rigenerare o riscrivere tutto "
+        "il piano. 'Stasera'/'a cena' = cena, 'oggi a pranzo'/'a mezzogiorno' "
+        "= pranzo, 'colazione'/'al mattino' = colazione. Se non esiste "
+        "ancora un piano pasti concreto, dillo e offriti di crearne uno.\n\n"
+        "LISTA DELLA SPESA:\n"
+        "Quando l'utente chiede la lista della spesa (es. 'fammi la lista "
+        "della spesa', 'cosa devo comprare per la settimana'):\n"
+        "1. Chiama get_meal_plan per leggere pasti_suggeriti.\n"
+        "2. Se non esiste un piano pasti concreto, dillo e offriti prima di "
+        "crearne uno (senza quello non puoi generare una lista sensata).\n"
+        "3. Assumi che il piano si ripeta per tutti i giorni della "
+        "settimana (7 giorni), a meno che l'utente non specifichi "
+        "diversamente (es. 'solo per 3 giorni').\n"
+        "4. Moltiplica le quantità di ogni ingrediente per il numero di "
+        "giorni, poi consolida gli ingredienti uguali o molto simili "
+        "sommando le quantità (es. se compare pollo sia a pranzo che a "
+        "cena, sommali in una sola voce).\n"
+        "5. Presenta la lista organizzata per categoria (es. Proteine, "
+        "Carboidrati/cereali, Frutta e verdura, Latticini, Dispensa/altro), "
+        "con quantità totali arrotondate in modo pratico per la spesa (es. "
+        "'circa 1.2 kg' invece di '1173g').\n"
+        "6. Ricorda che è una stima basata sul piano: l'utente può avere "
+        "già alcuni ingredienti in casa, quindi la lista va adattata.\n\n"
+        "Quando l'utente chiede di modificare/variare i pasti suggeriti "
+        "(es. 'non mi piace il pesce', 'cambia la cena'), chiama prima "
+        "get_meal_plan per vedere il piano attuale, poi chiama set_meal_plan "
+        "passando lo stesso calorie_target (a meno che non ci sia un motivo "
+        "per cambiarlo) e il nuovo pasti_suggeriti aggiornato — non "
+        "riscrivere tutto da zero se basta modificare un pasto.\n\n"
         "Quando l'utente chiede di correggere/rivedere il piano, o quando ti "
         "sembra naturale farlo dopo un aggiornamento di peso:\n"
         "1. Chiama get_weight_history e get_meal_plan per vedere il piano "
@@ -466,6 +523,7 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                     "proteine_target_g": plan.proteine_target_g,
                     "carboidrati_target_g": plan.carboidrati_target_g,
                     "grassi_target_g": plan.grassi_target_g,
+                    "pasti_suggeriti": plan.pasti_suggeriti,
                     "note": plan.note,
                     "aggiornato_at": plan.aggiornato_at.isoformat(),
                 }
@@ -482,6 +540,7 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                 proteine_target_g=tool_input.get("proteine_target_g"),
                 carboidrati_target_g=tool_input.get("carboidrati_target_g"),
                 grassi_target_g=tool_input.get("grassi_target_g"),
+                pasti_suggeriti=tool_input.get("pasti_suggeriti"),
                 note=tool_input.get("note"),
             )
             plan = crud.upsert_meal_plan(db, tool_input["user_id"], plan_in)
@@ -491,6 +550,7 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                 "proteine_target_g": plan.proteine_target_g,
                 "carboidrati_target_g": plan.carboidrati_target_g,
                 "grassi_target_g": plan.grassi_target_g,
+                "pasti_suggeriti": plan.pasti_suggeriti,
             }
         finally:
             db.close()
