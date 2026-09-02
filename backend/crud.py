@@ -123,6 +123,32 @@ def list_meals_for_day(db: Session, user_id: int, day: date_type) -> list[models
     )
 
 
+def update_meal(db: Session, meal_id: int, update: schemas.MealUpdate) -> models.Meal | None:
+    """
+    Aggiorna un pasto già registrato (es. dopo aver ricalcolato le calorie
+    con dati più precisi), invece di crearne uno nuovo che verrebbe
+    conteggiato due volte nel bilancio giornaliero.
+    """
+    meal = db.query(models.Meal).filter(models.Meal.id == meal_id).first()
+    if meal is None:
+        return None
+
+    if update.nome_alimento is not None:
+        meal.nome_alimento = update.nome_alimento
+    if update.calorie is not None:
+        meal.calorie = update.calorie
+    if update.proteine_g is not None:
+        meal.proteine_g = update.proteine_g
+    if update.carboidrati_g is not None:
+        meal.carboidrati_g = update.carboidrati_g
+    if update.grassi_g is not None:
+        meal.grassi_g = update.grassi_g
+
+    db.commit()
+    db.refresh(meal)
+    return meal
+
+
 # ---------- Bilancio calorico ----------
 
 def get_daily_balance(db: Session, user_id: int, day: date_type) -> schemas.DailyBalance:

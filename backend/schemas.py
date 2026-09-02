@@ -77,6 +77,16 @@ class MealOut(BaseModel):
     fonte: str
 
 
+class MealUpdate(BaseModel):
+    """Usato per correggere/ricalcolare un pasto già registrato — tutti i campi opzionali."""
+
+    nome_alimento: Optional[str] = None
+    calorie: Optional[float] = None
+    proteine_g: Optional[float] = None
+    carboidrati_g: Optional[float] = None
+    grassi_g: Optional[float] = None
+
+
 # ---------- Bilancio calorico ----------
 
 class DailyBalance(BaseModel):

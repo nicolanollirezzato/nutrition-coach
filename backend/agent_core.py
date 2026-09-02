@@ -46,7 +46,7 @@ claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_
 # Chiave gratuita del database nutrizionale USDA FoodData Central.
 # DEMO_KEY funziona subito ma con limiti molto bassi (30 richieste/ora);
 # per uso reale registra una chiave gratuita su https://fdc.nal.usda.gov/api-key-signup.html
-USDA_API_KEY = os.getenv("USDA_API_KEY", "DEMO_KEY")
+USDA_API_KEY = os.getenv("USDA_API_KEY") or "DEMO_KEY"
 USDA_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 
 client = genai.Client()  # legge GEMINI_API_KEY dall'ambiente
