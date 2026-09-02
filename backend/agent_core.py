@@ -357,6 +357,46 @@ GET_RECIPE = {
     },
 }
 
+GET_USER_PROFILE = {
+    "name": "get_user_profile",
+    "description": (
+        "Restituisce i dati anagrafici salvati dell'utente (altezza, età, "
+        "sesso, livello di attività), se presenti. USA SEMPRE questo tool "
+        "prima di chiedere questi dati per costruire un piano alimentare — "
+        "potrebbero essere già stati salvati in una conversazione "
+        "precedente, anche se non li vedi nella cronologia attuale."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"user_id": {"type": "integer"}},
+        "required": ["user_id"],
+    },
+}
+
+SET_USER_PROFILE = {
+    "name": "set_user_profile",
+    "description": (
+        "Salva o aggiorna i dati anagrafici dell'utente (altezza, età, "
+        "sesso, livello di attività). Chiamalo ogni volta che l'utente "
+        "fornisce questi dati, così non dovrai richiederli di nuovo in "
+        "futuro. Passa solo i campi che l'utente ha effettivamente fornito."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_id": {"type": "integer"},
+            "altezza_cm": {"type": "number"},
+            "eta": {"type": "integer"},
+            "sesso": {"type": "string", "description": "M o F"},
+            "livello_attivita": {
+                "type": "string",
+                "description": "es. sedentario, leggermente attivo, moderatamente attivo, molto attivo",
+            },
+        },
+        "required": ["user_id"],
+    },
+}
+
 RAW_TOOL_DEFINITIONS = [
     GET_DAILY_BALANCE,
     SEARCH_FOOD_NUTRITION,
@@ -370,6 +410,8 @@ RAW_TOOL_DEFINITIONS = [
     SET_MEAL_PLAN,
     SEARCH_RECIPES,
     GET_RECIPE,
+    GET_USER_PROFILE,
+    SET_USER_PROFILE,
 ]
 
 # Formato per Gemini (google-genai)
@@ -458,11 +500,35 @@ def build_system_prompt(user_id: int) -> str:
         "6. Nella risposta finale, spiega brevemente come hai calcolato le "
         "calorie così l'utente capisce se è un dato preciso o una stima.\n\n"
         "PIANO ALIMENTARE — definizione e correzione:\n"
-        "Quando l'utente chiede un piano alimentare per la prima volta, prima "
-        "di proporlo raccogli (con una o due domande, non un interrogatorio): "
-        "peso attuale, altezza, età, sesso, livello di attività fisica "
-        "abituale, e l'obiettivo (quanto vuole perdere/guadagnare e in quanto "
-        "tempo, se lo sa). Poi:\n"
+        "PRIMA di chiedere qualsiasi dato personale (peso, altezza, età...), "
+        "applica la REGOLA FONDAMENTALE vista sopra: chiama SEMPRE PRIMA "
+        "get_meal_plan E get_user_profile (in questo ordine, prima di "
+        "scrivere qualsiasi domanda all'utente). Se get_meal_plan mostra "
+        "già un piano con calorie_target e macro impostati, USA QUEI "
+        "VALORI — non richiedere di nuovo i dati personali. Questo vale "
+        "anche quando l'utente chiede di 'rifare', 'rinnovare' o 'variare' "
+        "il piano pasti (es. 'rifammi un piano fit'): di solito intende "
+        "ricomporre i pasti (magari con ricette diverse) MANTENENDO gli "
+        "stessi obiettivi calorici/macro già salvati, non ripartire da "
+        "zero chiedendo peso/altezza/età. Se invece serve davvero definire "
+        "un piano ex novo (nessun piano precedente) e get_user_profile "
+        "mostra già altezza/età/sesso/attività salvati da una conversazione "
+        "precedente, usa quelli e chiedi SOLO i campi mancanti (es. se "
+        "manca solo il peso attuale, chiedi solo quello). Chiedi tutti i "
+        "dati da zero solo se sia get_meal_plan sia get_user_profile "
+        "risultano completamente vuoti.\n\n"
+        "Ogni volta che l'utente fornisce peso/altezza/età/sesso/attività "
+        "(anche solo parzialmente), salvali SUBITO: il peso con log_weight, "
+        "gli altri con set_user_profile — così non dovrai richiederli mai "
+        "più, anche se la conversazione dovesse ripartire da zero in "
+        "futuro (riavvio del servizio, cambio di provider AI, ecc.).\n\n"
+        "Quando invece serve davvero definire un piano da zero (nessun "
+        "piano precedente, o l'utente vuole ricominciare), prima di "
+        "proporlo raccogli (con una o due domande, non un interrogatorio, "
+        "e solo i dati che get_user_profile non ha già): peso attuale, "
+        "altezza, età, sesso, livello di attività fisica abituale, e "
+        "l'obiettivo (quanto vuole perdere/guadagnare e in quanto tempo, "
+        "se lo sa). Poi:\n"
         "1. Calcola un obiettivo calorico giornaliero ragionevole (per la "
         "perdita di peso, un deficit moderato è più sostenibile di uno "
         "aggressivo: orientativamente 300-500 kcal/giorno sotto il "
@@ -909,6 +975,42 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                 "carboidrati_base_g": ricetta.carboidrati_base_g,
                 "grassi_base_g": ricetta.grassi_base_g,
                 "note": ricetta.note,
+            }
+        finally:
+            db.close()
+
+    if name == "get_user_profile":
+        db = SessionLocal()
+        try:
+            user = crud.get_user(db, tool_input["user_id"])
+            if user is None:
+                return {"errore": f"Utente {tool_input['user_id']} non trovato"}
+            return {
+                "altezza_cm": user.altezza_cm,
+                "eta": user.eta,
+                "sesso": user.sesso,
+                "livello_attivita": user.livello_attivita,
+            }
+        finally:
+            db.close()
+
+    if name == "set_user_profile":
+        db = SessionLocal()
+        try:
+            profile_in = schemas.UserProfileUpdate(
+                altezza_cm=tool_input.get("altezza_cm"),
+                eta=tool_input.get("eta"),
+                sesso=tool_input.get("sesso"),
+                livello_attivita=tool_input.get("livello_attivita"),
+            )
+            user = crud.update_user_profile(db, tool_input["user_id"], profile_in)
+            if user is None:
+                return {"errore": f"Utente {tool_input['user_id']} non trovato"}
+            return {
+                "altezza_cm": user.altezza_cm,
+                "eta": user.eta,
+                "sesso": user.sesso,
+                "livello_attivita": user.livello_attivita,
             }
         finally:
             db.close()

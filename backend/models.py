@@ -39,6 +39,14 @@ class User(Base):
     # id della chat Telegram collegata a questo utente (impostato al primo /start)
     telegram_chat_id = Column(String, nullable=True, unique=True, index=True)
 
+    # Profilo anagrafico, usato per calcolare il piano alimentare senza
+    # doverlo richiedere ogni volta che la memoria della conversazione si
+    # azzera (riavvio del servizio, passaggio a un provider AI diverso, ecc.)
+    altezza_cm = Column(Float, nullable=True)
+    eta = Column(Integer, nullable=True)
+    sesso = Column(String, nullable=True)  # "M" | "F"
+    livello_attivita = Column(String, nullable=True)  # es. "moderatamente attivo"
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     daily_activities = relationship("DailyActivity", back_populates="user")

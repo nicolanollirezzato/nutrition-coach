@@ -27,6 +27,15 @@ class UserOut(BaseModel):
     created_at: datetime
 
 
+class UserProfileUpdate(BaseModel):
+    """Usato per salvare/aggiornare i dati anagrafici — tutti i campi opzionali."""
+
+    altezza_cm: Optional[float] = None
+    eta: Optional[int] = None
+    sesso: Optional[str] = None
+    livello_attivita: Optional[str] = None
+
+
 # ---------- DailyActivity ----------
 
 class ActivityUpsert(BaseModel):

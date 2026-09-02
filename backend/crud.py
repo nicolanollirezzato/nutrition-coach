@@ -53,6 +53,33 @@ def create_user_with_telegram(
     return db_user
 
 
+def update_user_profile(
+    db: Session, user_id: int, profile: schemas.UserProfileUpdate
+) -> models.User | None:
+    """
+    Salva/aggiorna i dati anagrafici (altezza, età, sesso, attività), così
+    l'agente non deve richiederli ogni volta che la memoria della
+    conversazione si azzera. Aggiorna solo i campi effettivamente forniti.
+    """
+    user = get_user(db, user_id)
+    if user is None:
+        return None
+
+    if profile.altezza_cm is not None:
+        user.altezza_cm = profile.altezza_cm
+    if profile.eta is not None:
+        user.eta = profile.eta
+    if profile.sesso is not None:
+        user.sesso = profile.sesso
+    if profile.livello_attivita is not None:
+        user.livello_attivita = profile.livello_attivita
+
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+
 # ---------- Activity ----------
 
 def upsert_daily_activity(
