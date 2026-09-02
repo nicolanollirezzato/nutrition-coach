@@ -145,40 +145,53 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     chat_id = message["chat"]["id"]
     text = message["text"].strip()
 
-    user = crud.get_user_by_telegram_chat_id(db, str(chat_id))
-
-    if text == "/start":
-        if user is not None:
-            send_telegram_message(
-                chat_id, f"Bentornato! Sei già collegato all'utente #{user.id}."
-            )
-        else:
-            nome = message.get("from", {}).get("first_name", "Utente")
-            nuovo_utente = crud.create_user_with_telegram(db, str(chat_id), nome)
-            send_telegram_message(
-                chat_id,
-                f"Ciao {nome}! Ti ho registrato come utente #{nuovo_utente.id} "
-                f"con obiettivo di {nuovo_utente.obiettivo_calorico_giornaliero} kcal/giorno.\n\n"
-                "Da ora puoi chiedermi cose come 'quante calorie mi restano oggi?' "
-                "oppure dirmi cosa hai mangiato.",
-            )
-        return {"ok": True}
-
-    if user is None:
-        send_telegram_message(chat_id, "Prima di iniziare, scrivi /start per registrarti.")
-        return {"ok": True}
-
-    system_prompt = agent_core.build_system_prompt(user.id)
-    history = conversations.setdefault(chat_id, [])
-    history.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
-
     try:
-        updated_history, reply = await asyncio.to_thread(
-            agent_core.run_turn, history, system_prompt, text
-        )
-        conversations[chat_id] = updated_history
-    except Exception as e:
-        reply = f"Si è verificato un errore parlando con l'agente: {e}"
+        user = crud.get_user_by_telegram_chat_id(db, str(chat_id))
 
-    send_telegram_message(chat_id, reply)
-    return {"ok": True}
+        if text == "/start":
+            if user is not None:
+                send_telegram_message(
+                    chat_id, f"Bentornato! Sei già collegato all'utente #{user.id}."
+                )
+            else:
+                nome = message.get("from", {}).get("first_name", "Utente")
+                nuovo_utente = crud.create_user_with_telegram(db, str(chat_id), nome)
+                send_telegram_message(
+                    chat_id,
+                    f"Ciao {nome}! Ti ho registrato come utente #{nuovo_utente.id} "
+                    f"con obiettivo di {nuovo_utente.obiettivo_calorico_giornaliero} kcal/giorno.\n\n"
+                    "Da ora puoi chiedermi cose come 'quante calorie mi restano oggi?' "
+                    "oppure dirmi cosa hai mangiato.",
+                )
+            return {"ok": True}
+
+        if user is None:
+            send_telegram_message(chat_id, "Prima di iniziare, scrivi /start per registrarti.")
+            return {"ok": True}
+
+        system_prompt = agent_core.build_system_prompt(user.id)
+        history = conversations.setdefault(chat_id, [])
+        history.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
+
+        try:
+            updated_history, reply = await asyncio.to_thread(
+                agent_core.run_turn, history, system_prompt, text
+            )
+            conversations[chat_id] = updated_history
+        except Exception as e:
+            reply = f"Si è verificato un errore parlando con l'agente: {e}"
+
+        send_telegram_message(chat_id, reply)
+        return {"ok": True}
+
+    except Exception as e:
+        # Rete di sicurezza: qualsiasi errore imprevisto (es. connessione al
+        # database) non deve far sparire il messaggio nel nulla — l'utente
+        # riceve comunque un avviso invece di un silenzio senza spiegazioni.
+        try:
+            send_telegram_message(
+                chat_id, f"Si è verificato un errore imprevisto: {e}. Riprova tra poco."
+            )
+        except Exception:
+            pass
+        return {"ok": True}

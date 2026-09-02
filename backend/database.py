@@ -25,7 +25,18 @@ if DATABASE_URL.startswith("postgres://"):
 # connect_args serve solo per SQLite (permette l'uso multi-thread di FastAPI)
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+# pool_pre_ping=True: testa ogni connessione prima di usarla e la ricrea se
+# non è più valida. Necessario con Neon (e altri Postgres "serverless"), che
+# chiude le connessioni inattive dopo un po' — senza questa opzione, la prima
+# richiesta dopo una pausa fallirebbe con un errore di connessione invece di
+# riconnettersi automaticamente. pool_recycle forza comunque un ricambio
+# periodico delle connessioni come ulteriore rete di sicurezza.
+engine = create_engine(
+    DATABASE_URL,
+    connect_args=connect_args,
+    pool_pre_ping=True,
+    pool_recycle=280,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

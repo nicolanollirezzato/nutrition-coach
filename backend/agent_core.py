@@ -30,7 +30,7 @@ GEMINI_RETRY_BASE_DELAY = 1
 # API compatibile OpenAI). Se GROQ_API_KEY non è impostata, la riserva è
 # semplicemente disattivata e l'errore di Gemini viene mostrato come prima.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Chiave gratuita del database nutrizionale USDA FoodData Central.
