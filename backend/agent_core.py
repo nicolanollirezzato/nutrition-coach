@@ -594,6 +594,32 @@ def _generate_with_retry(contents: list, config: types.GenerateContentConfig):
     raise ultimo_errore
 
 
+GROQ_MAX_RETRIES = 3
+GROQ_RETRY_BASE_DELAY = 1
+
+
+def _groq_post_with_retry(payload: dict) -> dict:
+    """
+    Chiama l'API di Groq riprovando automaticamente su errori temporanei
+    (503, 429 "troppe richieste"), con la stessa logica di attesa crescente
+    usata per Gemini.
+    """
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    ultimo_errore = None
+    for tentativo in range(GROQ_MAX_RETRIES):
+        resp = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=30)
+        if resp.status_code not in (429, 503):
+            resp.raise_for_status()
+            return resp.json()
+        ultimo_errore = requests.HTTPError(
+            f"{resp.status_code} Client Error: {resp.reason} for url: {resp.url}", response=resp
+        )
+        if tentativo == GROQ_MAX_RETRIES - 1:
+            raise ultimo_errore
+        time.sleep(GROQ_RETRY_BASE_DELAY * (2 ** tentativo))
+    raise ultimo_errore
+
+
 def run_turn_groq(user_text: str, system_prompt: str) -> str:
     """
     Riserva usata quando Gemini continua a fallire dopo i tentativi. Gestisce
@@ -609,22 +635,17 @@ def run_turn_groq(user_text: str, system_prompt: str) -> str:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_text},
     ]
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
 
     for _ in range(6):  # limite di sicurezza sui giri di tool use
-        resp = requests.post(
-            GROQ_API_URL,
-            headers=headers,
-            json={
+        data = _groq_post_with_retry(
+            {
                 "model": GROQ_MODEL,
                 "messages": messages,
                 "tools": GROQ_TOOLS,
                 "tool_choice": "auto",
-            },
-            timeout=30,
+            }
         )
-        resp.raise_for_status()
-        message = resp.json()["choices"][0]["message"]
+        message = data["choices"][0]["message"]
         messages.append(message)
 
         tool_calls = message.get("tool_calls")
@@ -666,9 +687,15 @@ def run_turn(contents: list, system_prompt: str, user_text: str | None = None) -
     while True:
         try:
             response = _generate_with_retry(contents, config)
-        except Exception:
+        except Exception as errore_gemini:
             if user_text is not None and GROQ_API_KEY:
-                reply = run_turn_groq(user_text, system_prompt)
+                try:
+                    reply = run_turn_groq(user_text, system_prompt)
+                except Exception as errore_groq:
+                    raise RuntimeError(
+                        "i sistemi AI (Gemini e la riserva Groq) sono entrambi "
+                        "momentaneamente sovraccarichi. Riprova tra qualche minuto."
+                    ) from errore_groq
                 contents.append(
                     types.Content(role="model", parts=[types.Part.from_text(text=reply)])
                 )
