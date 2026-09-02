@@ -279,6 +279,10 @@ def build_system_prompt(user_id: int) -> str:
         "in modo breve e concreto. Usa i tool a disposizione per leggere o aggiornare "
         "i dati reali dell'utente: non inventare mai numeri sulle calorie residue o "
         "bruciate, quelli devono sempre venire da get_daily_balance.\n\n"
+        "IMPORTANTE: se il risultato di un tool contiene una chiave 'errore', NON "
+        "interpretarlo come 'nessun dato trovato' — riporta all'utente il messaggio "
+        "di errore esatto che hai ricevuto, così può essere risolto. Un errore "
+        "tecnico e 'non esiste ancora nulla' sono due cose diverse.\n\n"
         "Quando l'utente descrive un pasto:\n"
         "1. Identifica gli alimenti principali e le quantità (se l'utente non dà "
         "le quantità, assumi porzioni standard ragionevoli e dillo chiaramente).\n"
@@ -407,6 +411,15 @@ def execute_tool(name: str, tool_input: dict) -> dict:
     sessione DB dedicata e la chiudono subito dopo, per restare semplici e
     sicuri anche con più richieste concorrenti (Render può servire più utenti).
     """
+    # Difesa contro provider diversi (Gemini vs Groq) che a volte restituiscono
+    # user_id come stringa o float invece che intero: forziamo sempre il tipo
+    # corretto qui, in un solo posto, invece che in ogni singolo ramo sotto.
+    if "user_id" in tool_input:
+        try:
+            tool_input["user_id"] = int(tool_input["user_id"])
+        except (TypeError, ValueError):
+            return {"errore": f"user_id non valido: {tool_input.get('user_id')!r}"}
+
     if name == "search_food_nutrition":
         try:
             risultati = search_food_nutrition(tool_input["query"])
