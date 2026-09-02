@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     UniqueConstraint,
+    Text,
 )
 from sqlalchemy.orm import relationship
 
@@ -119,6 +120,11 @@ class MealPlan(Base):
     proteine_target_g = Column(Float, nullable=True)
     carboidrati_target_g = Column(Float, nullable=True)
     grassi_target_g = Column(Float, nullable=True)
+
+    # piano pasti vero e proprio (colazione/pranzo/cena/spuntini), testo
+    # libero composto dall'agente — non solo target numerici astratti
+    pasti_suggeriti = Column(Text, nullable=True)
+
     note = Column(String, nullable=True)
 
     creato_at = Column(DateTime, default=datetime.utcnow)

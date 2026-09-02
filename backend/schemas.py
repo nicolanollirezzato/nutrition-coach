@@ -115,6 +115,7 @@ class MealPlanUpsert(BaseModel):
     proteine_target_g: Optional[float] = None
     carboidrati_target_g: Optional[float] = None
     grassi_target_g: Optional[float] = None
+    pasti_suggeriti: Optional[str] = None
     note: Optional[str] = None
 
 
@@ -128,5 +129,6 @@ class MealPlanOut(BaseModel):
     proteine_target_g: Optional[float] = None
     carboidrati_target_g: Optional[float] = None
     grassi_target_g: Optional[float] = None
+    pasti_suggeriti: Optional[str] = None
     note: Optional[str] = None
     aggiornato_at: datetime

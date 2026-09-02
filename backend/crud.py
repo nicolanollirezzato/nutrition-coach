@@ -226,6 +226,7 @@ def upsert_meal_plan(
         existing.proteine_target_g = plan.proteine_target_g
         existing.carboidrati_target_g = plan.carboidrati_target_g
         existing.grassi_target_g = plan.grassi_target_g
+        existing.pasti_suggeriti = plan.pasti_suggeriti
         existing.note = plan.note
         db_plan = existing
     else:
@@ -236,6 +237,7 @@ def upsert_meal_plan(
             proteine_target_g=plan.proteine_target_g,
             carboidrati_target_g=plan.carboidrati_target_g,
             grassi_target_g=plan.grassi_target_g,
+            pasti_suggeriti=plan.pasti_suggeriti,
             note=plan.note,
         )
         db.add(db_plan)
