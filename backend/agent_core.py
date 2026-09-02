@@ -691,7 +691,7 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                         "carboidrati_g": m.carboidrati_g,
                         "grassi_g": m.grassi_g,
                         "orario": m.orario.isoformat(),
-                        "aggiornato_at": m.aggiornato_at.isoformat(),
+                        "aggiornato_at": m.aggiornato_at.isoformat() if m.aggiornato_at else None,
                         "fonte": m.fonte,
                     }
                     for m in meals
