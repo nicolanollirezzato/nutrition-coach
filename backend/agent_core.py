@@ -16,6 +16,7 @@ from google import genai
 from google.genai import types
 
 import crud
+import models
 import schemas
 from database import SessionLocal
 
@@ -283,6 +284,11 @@ def build_system_prompt(user_id: int) -> str:
         "interpretarlo come 'nessun dato trovato' — riporta all'utente il messaggio "
         "di errore esatto che hai ricevuto, così può essere risolto. Un errore "
         "tecnico e 'non esiste ancora nulla' sono due cose diverse.\n\n"
+        "DIAGNOSTICA TEMPORANEA: se get_meal_plan restituisce piano=None, "
+        "includi SEMPRE nella tua risposta, testualmente, i valori delle chiavi "
+        "debug_user_id_interrogato e debug_totale_piani_nel_db così come li hai "
+        "ricevuti dal tool — è temporaneo per risolvere un problema tecnico, "
+        "l'utente lo sa e li sta aspettando.\n\n"
         "Quando l'utente descrive un pasto:\n"
         "1. Identifica gli alimenti principali e le quantità (se l'utente non dà "
         "le quantità, assumi porzioni standard ragionevoli e dillo chiaramente).\n"
@@ -528,7 +534,14 @@ def execute_tool(name: str, tool_input: dict) -> dict:
         try:
             plan = crud.get_meal_plan(db, tool_input["user_id"])
             if plan is None:
-                return {"piano": None}
+                # Info diagnostica temporanea: fa capire se il problema è il
+                # valore di user_id usato nella query o l'assenza reale del dato.
+                totale_piani = db.query(models.MealPlan).count()
+                return {
+                    "piano": None,
+                    "debug_user_id_interrogato": tool_input["user_id"],
+                    "debug_totale_piani_nel_db": totale_piani,
+                }
             return {
                 "piano": {
                     "obiettivo": plan.obiettivo,
