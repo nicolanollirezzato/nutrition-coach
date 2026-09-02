@@ -47,6 +47,20 @@ TELEGRAM_MAX_MESSAGE_LENGTH = 4000  # margine di sicurezza sotto il limite reale
 # bilancio calorico no, quello resta nel database.
 conversations: dict[int, list] = {}
 
+# Numero massimo di elementi (messaggi + chiamate/risultati tool) tenuti in
+# memoria per ogni chat. Senza un limite, una conversazione lunga rimanderebbe
+# per intero l'intera storia ad ogni singolo messaggio successivo, con un
+# costo in token che cresce senza controllo. Tagliare i più vecchi non tocca
+# in alcun modo i dati salvati nel database (pasti, peso, piano) — solo il
+# "filo del discorso" più lontano nel tempo.
+MAX_HISTORY_ITEMS = 10
+
+
+def _tronca_cronologia(history: list) -> list:
+    if len(history) > MAX_HISTORY_ITEMS:
+        return history[-MAX_HISTORY_ITEMS:]
+    return history
+
 
 # ---------- Users (API dirette, utili per test/debug da /docs) ----------
 
@@ -170,14 +184,14 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
             return {"ok": True}
 
         system_prompt = agent_core.build_system_prompt(user.id)
-        history = conversations.setdefault(chat_id, [])
+        history = _tronca_cronologia(conversations.setdefault(chat_id, []))
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
         try:
             updated_history, reply = await asyncio.to_thread(
                 agent_core.run_turn, history, system_prompt, text
             )
-            conversations[chat_id] = updated_history
+            conversations[chat_id] = _tronca_cronologia(updated_history)
         except Exception as e:
             reply = f"Si è verificato un errore parlando con l'agente: {e}"
 
