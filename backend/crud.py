@@ -162,3 +162,88 @@ def get_daily_balance(db: Session, user_id: int, day: date_type) -> schemas.Dail
         calorie_residue=calorie_residue,
         numero_pasti_registrati=numero_pasti,
     )
+
+
+# ---------- Peso ----------
+
+def upsert_weight_entry(
+    db: Session, user_id: int, entry: schemas.WeightUpsert
+) -> models.WeightEntry:
+    """Crea o aggiorna la pesata di un utente in una data (un valore per giorno)."""
+    giorno = entry.data or date_type.today()
+    existing = (
+        db.query(models.WeightEntry)
+        .filter(models.WeightEntry.user_id == user_id, models.WeightEntry.data == giorno)
+        .first()
+    )
+
+    if existing:
+        existing.peso_kg = entry.peso_kg
+        existing.note = entry.note
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    db_entry = models.WeightEntry(
+        user_id=user_id, data=giorno, peso_kg=entry.peso_kg, note=entry.note
+    )
+    db.add(db_entry)
+    db.commit()
+    db.refresh(db_entry)
+    return db_entry
+
+
+def list_weight_entries(
+    db: Session, user_id: int, since: date_type
+) -> list[models.WeightEntry]:
+    return (
+        db.query(models.WeightEntry)
+        .filter(models.WeightEntry.user_id == user_id, models.WeightEntry.data >= since)
+        .order_by(models.WeightEntry.data)
+        .all()
+    )
+
+
+# ---------- Piano alimentare ----------
+
+def get_meal_plan(db: Session, user_id: int) -> models.MealPlan | None:
+    return db.query(models.MealPlan).filter(models.MealPlan.user_id == user_id).first()
+
+
+def upsert_meal_plan(
+    db: Session, user_id: int, plan: schemas.MealPlanUpsert
+) -> models.MealPlan:
+    """
+    Crea o aggiorna il piano alimentare attivo. Sincronizza anche
+    l'obiettivo calorico giornaliero dell'utente, così get_daily_balance
+    riflette subito il nuovo piano senza bisogno di altre modifiche.
+    """
+    existing = get_meal_plan(db, user_id)
+
+    if existing:
+        existing.obiettivo = plan.obiettivo
+        existing.calorie_target = plan.calorie_target
+        existing.proteine_target_g = plan.proteine_target_g
+        existing.carboidrati_target_g = plan.carboidrati_target_g
+        existing.grassi_target_g = plan.grassi_target_g
+        existing.note = plan.note
+        db_plan = existing
+    else:
+        db_plan = models.MealPlan(
+            user_id=user_id,
+            obiettivo=plan.obiettivo,
+            calorie_target=plan.calorie_target,
+            proteine_target_g=plan.proteine_target_g,
+            carboidrati_target_g=plan.carboidrati_target_g,
+            grassi_target_g=plan.grassi_target_g,
+            note=plan.note,
+        )
+        db.add(db_plan)
+
+    user = get_user(db, user_id)
+    if user is not None:
+        user.obiettivo_calorico_giornaliero = plan.calorie_target
+
+    db.commit()
+    db.refresh(db_plan)
+    return db_plan

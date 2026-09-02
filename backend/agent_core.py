@@ -7,7 +7,7 @@ backend e agente vivono nello stesso servizio.
 """
 
 import os
-from datetime import date
+from datetime import date, timedelta
 
 import requests
 from google import genai
@@ -131,6 +131,96 @@ LOG_ACTIVITY = {
     },
 }
 
+LOG_WEIGHT = {
+    "name": "log_weight",
+    "description": (
+        "Registra il peso corporeo dell'utente per una data (oggi se non "
+        "specificata). Usa questo tool ogni volta che l'utente ti comunica "
+        "il suo peso attuale."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_id": {"type": "integer"},
+            "peso_kg": {"type": "number", "description": "Peso in kg"},
+            "data": {
+                "type": "string",
+                "description": "Data in formato YYYY-MM-DD. Se omessa, si intende oggi.",
+            },
+        },
+        "required": ["user_id", "peso_kg"],
+    },
+}
+
+GET_WEIGHT_HISTORY = {
+    "name": "get_weight_history",
+    "description": (
+        "Restituisce lo storico del peso dell'utente negli ultimi N giorni "
+        "(default 90). USA SEMPRE questo tool prima di definire o correggere "
+        "un piano alimentare, per valutare l'andamento reale del percorso."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_id": {"type": "integer"},
+            "giorni": {
+                "type": "integer",
+                "description": "Quanti giorni indietro guardare (default 90)",
+            },
+        },
+        "required": ["user_id"],
+    },
+}
+
+GET_MEAL_PLAN = {
+    "name": "get_meal_plan",
+    "description": (
+        "Restituisce il piano alimentare attivo dell'utente (calorie e "
+        "macronutrienti target), se esiste. Usa questo tool per controllare "
+        "se l'utente ha già un piano prima di proporne uno nuovo."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"user_id": {"type": "integer"}},
+        "required": ["user_id"],
+    },
+}
+
+SET_MEAL_PLAN = {
+    "name": "set_meal_plan",
+    "description": (
+        "Crea o aggiorna il piano alimentare attivo dell'utente: obiettivo "
+        "calorico giornaliero e target di macronutrienti. Usa questo tool "
+        "quando definisci un piano per la prima volta o quando lo correggi "
+        "in base ai progressi (peso, aderenza alle calorie). Non proporre "
+        "MAI un target sotto le 1200 kcal/giorno, a meno che l'utente non "
+        "abbia esplicitamente detto di essere seguito da un medico o "
+        "nutrizionista per un piano più aggressivo."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_id": {"type": "integer"},
+            "calorie_target": {
+                "type": "integer",
+                "description": "Obiettivo calorico giornaliero in kcal",
+            },
+            "obiettivo": {
+                "type": "string",
+                "description": "Descrizione dell'obiettivo, es. 'perdita 0.5 kg/settimana'",
+            },
+            "proteine_target_g": {"type": "number"},
+            "carboidrati_target_g": {"type": "number"},
+            "grassi_target_g": {"type": "number"},
+            "note": {
+                "type": "string",
+                "description": "Eventuali note sul piano o sul perché è stato corretto",
+            },
+        },
+        "required": ["user_id", "calorie_target"],
+    },
+}
+
 TOOLS = [
     types.Tool(
         function_declarations=[
@@ -138,6 +228,10 @@ TOOLS = [
             SEARCH_FOOD_NUTRITION,
             LOG_MEAL,
             LOG_ACTIVITY,
+            LOG_WEIGHT,
+            GET_WEIGHT_HISTORY,
+            GET_MEAL_PLAN,
+            SET_MEAL_PLAN,
         ]
     )
 ]
@@ -167,6 +261,37 @@ def build_system_prompt(user_id: int) -> str:
         "quando li hai calcolati.\n"
         "6. Nella risposta finale, spiega brevemente come hai calcolato le "
         "calorie così l'utente capisce se è un dato preciso o una stima.\n\n"
+        "PIANO ALIMENTARE — definizione e correzione:\n"
+        "Quando l'utente chiede un piano alimentare per la prima volta, prima "
+        "di proporlo raccogli (con una o due domande, non un interrogatorio): "
+        "peso attuale, altezza, età, sesso, livello di attività fisica "
+        "abituale, e l'obiettivo (quanto vuole perdere/guadagnare e in quanto "
+        "tempo, se lo sa). Poi:\n"
+        "1. Calcola un obiettivo calorico giornaliero ragionevole (per la "
+        "perdita di peso, un deficit moderato è più sostenibile di uno "
+        "aggressivo: orientativamente 300-500 kcal/giorno sotto il "
+        "mantenimento, mai sotto le 1200 kcal/giorno).\n"
+        "2. Suggerisci target di macronutrienti equilibrati (proteine "
+        "adeguate a preservare la massa magra, orientativamente 1.6-2g per "
+        "kg di peso corporeo, il resto diviso tra carboidrati e grassi).\n"
+        "3. Salva il piano con set_meal_plan.\n"
+        "4. Ricorda sempre che non sei un medico o un nutrizionista: per "
+        "condizioni mediche, gravidanza, disturbi alimentari o esigenze "
+        "particolari, l'utente deve rivolgersi a un professionista — dillo "
+        "esplicitamente quando proponi un piano per la prima volta.\n\n"
+        "Quando l'utente chiede di correggere/rivedere il piano, o quando ti "
+        "sembra naturale farlo dopo un aggiornamento di peso:\n"
+        "1. Chiama get_weight_history e get_meal_plan per vedere il piano "
+        "attuale e l'andamento reale del peso nel tempo.\n"
+        "2. Se il peso non si muove nella direzione dell'obiettivo dopo "
+        "alcune settimane di dati, proponi una correzione moderata (es. "
+        "-100/-150 kcal), spiegando il motivo. Se il peso scende più "
+        "velocemente del previsto o l'utente riporta fame eccessiva/stanchezza, "
+        "proponi di alzare leggermente le calorie invece di scendere ancora.\n"
+        "3. Aggiorna il piano con set_meal_plan solo dopo aver spiegato la "
+        "modifica e il perché, non silenziosamente.\n"
+        "4. Non correggere il piano sulla base di un singolo giorno: servono "
+        "più giorni/settimane di dati per un trend affidabile.\n\n"
         f"L'utente con cui stai parlando ha user_id={user_id}: usalo sempre nei tool, "
         "anche se l'utente non lo specifica."
     )
@@ -278,6 +403,76 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                 "calorie_attive_bruciate": activity.calorie_attive_bruciate,
                 "passi": activity.passi,
                 "minuti_allenamento": activity.minuti_allenamento,
+            }
+        finally:
+            db.close()
+
+    if name == "log_weight":
+        db = SessionLocal()
+        try:
+            weight_in = schemas.WeightUpsert(
+                peso_kg=tool_input["peso_kg"],
+                data=date.fromisoformat(tool_input["data"]) if tool_input.get("data") else None,
+            )
+            entry = crud.upsert_weight_entry(db, tool_input["user_id"], weight_in)
+            return {"data": entry.data.isoformat(), "peso_kg": entry.peso_kg}
+        finally:
+            db.close()
+
+    if name == "get_weight_history":
+        db = SessionLocal()
+        try:
+            giorni = tool_input.get("giorni", 90)
+            since = date.today() - timedelta(days=giorni)
+            entries = crud.list_weight_entries(db, tool_input["user_id"], since)
+            if not entries:
+                return {"storico": [], "nota": "Nessuna pesata registrata in questo periodo"}
+            return {
+                "storico": [
+                    {"data": e.data.isoformat(), "peso_kg": e.peso_kg} for e in entries
+                ]
+            }
+        finally:
+            db.close()
+
+    if name == "get_meal_plan":
+        db = SessionLocal()
+        try:
+            plan = crud.get_meal_plan(db, tool_input["user_id"])
+            if plan is None:
+                return {"piano": None}
+            return {
+                "piano": {
+                    "obiettivo": plan.obiettivo,
+                    "calorie_target": plan.calorie_target,
+                    "proteine_target_g": plan.proteine_target_g,
+                    "carboidrati_target_g": plan.carboidrati_target_g,
+                    "grassi_target_g": plan.grassi_target_g,
+                    "note": plan.note,
+                    "aggiornato_at": plan.aggiornato_at.isoformat(),
+                }
+            }
+        finally:
+            db.close()
+
+    if name == "set_meal_plan":
+        db = SessionLocal()
+        try:
+            plan_in = schemas.MealPlanUpsert(
+                calorie_target=tool_input["calorie_target"],
+                obiettivo=tool_input.get("obiettivo"),
+                proteine_target_g=tool_input.get("proteine_target_g"),
+                carboidrati_target_g=tool_input.get("carboidrati_target_g"),
+                grassi_target_g=tool_input.get("grassi_target_g"),
+                note=tool_input.get("note"),
+            )
+            plan = crud.upsert_meal_plan(db, tool_input["user_id"], plan_in)
+            return {
+                "obiettivo": plan.obiettivo,
+                "calorie_target": plan.calorie_target,
+                "proteine_target_g": plan.proteine_target_g,
+                "carboidrati_target_g": plan.carboidrati_target_g,
+                "grassi_target_g": plan.grassi_target_g,
             }
         finally:
             db.close()

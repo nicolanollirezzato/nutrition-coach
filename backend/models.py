@@ -41,6 +41,8 @@ class User(Base):
 
     daily_activities = relationship("DailyActivity", back_populates="user")
     meals = relationship("Meal", back_populates="user")
+    weight_entries = relationship("WeightEntry", back_populates="user")
+    meal_plan = relationship("MealPlan", uselist=False, back_populates="user")
 
 
 class DailyActivity(Base):
@@ -82,3 +84,44 @@ class Meal(Base):
     fonte = Column(String, nullable=False, default="manuale")  # "manuale" | "agente"
 
     user = relationship("User", back_populates="meals")
+
+
+class WeightEntry(Base):
+    """Peso corporeo registrato nel tempo, per valutare l'andamento del percorso."""
+
+    __tablename__ = "weight_entries"
+    __table_args__ = (
+        UniqueConstraint("user_id", "data", name="uq_user_weight_data"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    data = Column(Date, nullable=False, default=date.today)
+    peso_kg = Column(Float, nullable=False)
+    note = Column(String, nullable=True)
+
+    user = relationship("User", back_populates="weight_entries")
+
+
+class MealPlan(Base):
+    """
+    Piano alimentare attivo dell'utente: un solo piano per utente (viene
+    aggiornato/corretto nel tempo dall'agente, non se ne accumulano tanti).
+    """
+
+    __tablename__ = "meal_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+
+    obiettivo = Column(String, nullable=True)  # es. "perdita 0.5 kg/settimana"
+    calorie_target = Column(Integer, nullable=False)
+    proteine_target_g = Column(Float, nullable=True)
+    carboidrati_target_g = Column(Float, nullable=True)
+    grassi_target_g = Column(Float, nullable=True)
+    note = Column(String, nullable=True)
+
+    creato_at = Column(DateTime, default=datetime.utcnow)
+    aggiornato_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="meal_plan")

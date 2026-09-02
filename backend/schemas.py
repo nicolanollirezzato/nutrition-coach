@@ -87,3 +87,46 @@ class DailyBalance(BaseModel):
     calorie_assunte: float
     calorie_residue: float
     numero_pasti_registrati: int
+
+
+# ---------- Peso ----------
+
+class WeightUpsert(BaseModel):
+    peso_kg: float
+    data: Optional[date] = None  # se omessa, oggi
+    note: Optional[str] = None
+
+
+class WeightOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    data: date
+    peso_kg: float
+    note: Optional[str] = None
+
+
+# ---------- Piano alimentare ----------
+
+class MealPlanUpsert(BaseModel):
+    calorie_target: int
+    obiettivo: Optional[str] = None
+    proteine_target_g: Optional[float] = None
+    carboidrati_target_g: Optional[float] = None
+    grassi_target_g: Optional[float] = None
+    note: Optional[str] = None
+
+
+class MealPlanOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    obiettivo: Optional[str] = None
+    calorie_target: int
+    proteine_target_g: Optional[float] = None
+    carboidrati_target_g: Optional[float] = None
+    grassi_target_g: Optional[float] = None
+    note: Optional[str] = None
+    aggiornato_at: datetime
