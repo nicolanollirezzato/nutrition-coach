@@ -52,7 +52,7 @@ conversations: dict[int, list] = {}
 # costo in token che cresce senza controllo. Tagliare i più vecchi non tocca
 # in alcun modo i dati salvati nel database (pasti, peso, piano) — solo il
 # "filo del discorso" più lontano nel tempo.
-MAX_HISTORY_ITEMS = 10
+MAX_HISTORY_ITEMS = 30
 
 
 def _tronca_cronologia(history: list) -> list:
