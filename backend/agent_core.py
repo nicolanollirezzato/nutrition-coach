@@ -317,6 +317,46 @@ SET_MEAL_PLAN = {
     },
 }
 
+SEARCH_RECIPES = {
+    "name": "search_recipes",
+    "description": (
+        "Cerca ricette nella libreria salvata, filtrando per categoria "
+        "(colazione/pranzo/cena/spuntino). Restituisce nome, id e valori "
+        "nutrizionali per la porzione BASE di ciascuna. USA QUESTO quando "
+        "componi o rivedi un piano pasti: preferisci prendere spunto da "
+        "ricette reali della libreria invece di improvvisare sempre da "
+        "zero, quando ce n'è una adatta per quella fascia/categoria."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "categoria": {
+                "type": "string",
+                "description": "Una tra: colazione, pranzo, cena, spuntino. Se omessa, restituisce tutte.",
+            },
+        },
+    },
+}
+
+GET_RECIPE = {
+    "name": "get_recipe",
+    "description": (
+        "Restituisce il dettaglio completo di una ricetta: ingredienti con "
+        "quantità BASE (per una porzione) e valori nutrizionali base. Usa "
+        "questo per scalare le quantità in proporzione al target calorico "
+        "del pasto che stai componendo: es. se la ricetta base è 500 kcal "
+        "e il pasto target è 650 kcal, moltiplica ogni ingrediente e i "
+        "macro per 650/500 = 1.3."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "recipe_id": {"type": "integer"},
+        },
+        "required": ["recipe_id"],
+    },
+}
+
 RAW_TOOL_DEFINITIONS = [
     GET_DAILY_BALANCE,
     SEARCH_FOOD_NUTRITION,
@@ -328,6 +368,8 @@ RAW_TOOL_DEFINITIONS = [
     GET_WEIGHT_HISTORY,
     GET_MEAL_PLAN,
     SET_MEAL_PLAN,
+    SEARCH_RECIPES,
+    GET_RECIPE,
 ]
 
 # Formato per Gemini (google-genai)
@@ -432,11 +474,23 @@ def build_system_prompt(user_id: int) -> str:
         "4. Se l'utente chiede anche pasti concreti (colazione/pranzo/cena/"
         "spuntini) e non solo i numeri target, componi un piano pasti "
         "SETTIMANALE (7 giorni diversi, non lo stesso ripetuto) che ogni "
-        "giorno sommi circa a calorie_target: usa search_food_nutrition per "
-        "alimenti reali con quantità precise, varia gli alimenti tra un "
-        "giorno e l'altro per rendere il piano sostenibile, poi salvalo nel "
+        "giorno sommi circa a calorie_target. REGOLA DI PRIORITÀ per ogni "
+        "pasto: chiama SEMPRE PRIMA search_recipes per quella categoria. "
+        "La libreria contiene centinaia di ricette (comprese molte 'fit', "
+        "più proteiche): usa quelle come prima scelta, non come eccezione. "
+        "Se trovi almeno una ricetta adatta, chiama get_recipe e SCALA le "
+        "quantità in proporzione al target di quel pasto (es. ricetta base "
+        "500 kcal, pasto target 650 kcal -> moltiplica ogni ingrediente e "
+        "i macro per 650/500). Componi un pasto da zero con "
+        "search_food_nutrition SOLO se search_recipes non restituisce "
+        "nulla di adatto per quella categoria/esigenza (es. l'utente ha "
+        "chiesto qualcosa che nessuna ricetta salvata copre). Se l'utente "
+        "chiede esplicitamente pasti 'fit'/ad alta proteina, filtra e "
+        "preferisci le ricette con 'fit'/'proteic' nel nome o con un "
+        "rapporto proteine/calorie alto. Varia le ricette tra un giorno e "
+        "l'altro per rendere il piano sostenibile, poi salva tutto nel "
         "campo pasti_suggeriti di set_meal_plan (testo strutturato per "
-        "giorno e per pasto, con calorie indicative per ciascuno).\n"
+        "giorno e per pasto, con calorie indicative).\n"
         "5. Ricorda sempre che non sei un medico o un nutrizionista: per "
         "condizioni mediche, gravidanza, disturbi alimentari o esigenze "
         "particolari, l'utente deve rivolgersi a un professionista — dillo "
@@ -474,7 +528,15 @@ def build_system_prompt(user_id: int) -> str:
         "con quantità totali arrotondate in modo pratico per la spesa (es. "
         "'circa 1.2 kg' invece di '1173g').\n"
         "6. Ricorda che è una stima basata sul piano: l'utente può avere "
-        "già alcuni ingredienti in casa, quindi la lista va adattata.\n\n"
+        "già alcuni ingredienti in casa, quindi la lista va adattata.\n"
+        "7. Dato che il piano è composto PRIORITARIAMENTE da ricette della "
+        "libreria (vedi regola di priorità sopra), per ogni pasto del "
+        "piano che corrisponde a una ricetta chiama get_recipe per "
+        "ottenere gli ingredienti esatti con le quantità — questa è la "
+        "fonte principale e più precisa per la lista della spesa, da "
+        "preferire sempre rispetto a stimare dal testo libero del piano. "
+        "Stima dal testo solo per gli eventuali pasti composti da zero "
+        "(quando search_recipes non aveva nulla di adatto).\n\n"
         "Quando l'utente chiede di modificare/variare i pasti suggeriti "
         "(es. 'non mi piace il pesce', 'cambia la cena'), chiama prima "
         "get_meal_plan per vedere il piano attuale, poi chiama set_meal_plan "
@@ -804,6 +866,49 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                 "carboidrati_target_g": plan.carboidrati_target_g,
                 "grassi_target_g": plan.grassi_target_g,
                 "pasti_suggeriti": plan.pasti_suggeriti,
+            }
+        finally:
+            db.close()
+
+    if name == "search_recipes":
+        db = SessionLocal()
+        try:
+            ricette = crud.list_recipes(db, tool_input.get("categoria"))
+            if not ricette:
+                return {"ricette": [], "nota": "Nessuna ricetta trovata per questa categoria"}
+            return {
+                "ricette": [
+                    {
+                        "id": r.id,
+                        "nome": r.nome,
+                        "categoria": r.categoria,
+                        "calorie_base": r.calorie_base,
+                        "proteine_base_g": r.proteine_base_g,
+                        "carboidrati_base_g": r.carboidrati_base_g,
+                        "grassi_base_g": r.grassi_base_g,
+                    }
+                    for r in ricette
+                ]
+            }
+        finally:
+            db.close()
+
+    if name == "get_recipe":
+        db = SessionLocal()
+        try:
+            ricetta = crud.get_recipe(db, int(tool_input["recipe_id"]))
+            if ricetta is None:
+                return {"errore": f"Nessuna ricetta trovata con id {tool_input['recipe_id']}"}
+            return {
+                "id": ricetta.id,
+                "nome": ricetta.nome,
+                "categoria": ricetta.categoria,
+                "ingredienti_base": ricetta.ingredienti,
+                "calorie_base": ricetta.calorie_base,
+                "proteine_base_g": ricetta.proteine_base_g,
+                "carboidrati_base_g": ricetta.carboidrati_base_g,
+                "grassi_base_g": ricetta.grassi_base_g,
+                "note": ricetta.note,
             }
         finally:
             db.close()

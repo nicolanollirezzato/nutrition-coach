@@ -303,3 +303,16 @@ def upsert_meal_plan(
     db.commit()
     db.refresh(db_plan)
     return db_plan
+
+
+# ---------- Ricette ----------
+
+def list_recipes(db: Session, categoria: str | None = None) -> list[models.Recipe]:
+    query = db.query(models.Recipe)
+    if categoria:
+        query = query.filter(models.Recipe.categoria == categoria)
+    return query.all()
+
+
+def get_recipe(db: Session, recipe_id: int) -> models.Recipe | None:
+    return db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()

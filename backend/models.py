@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     UniqueConstraint,
     Text,
+    JSON,
 )
 from sqlalchemy.orm import relationship
 
@@ -132,3 +133,28 @@ class MealPlan(Base):
     aggiornato_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="meal_plan")
+
+
+class Recipe(Base):
+    """
+    Libreria di ricette condivisa (non legata a un singolo utente): l'agente
+    la usa come spunto quando compone o rivede un piano pasti, scalando le
+    quantità in proporzione al target calorico del pasto in questione.
+    """
+
+    __tablename__ = "recipes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String, nullable=False)
+    categoria = Column(String, nullable=False)  # "colazione" | "pranzo" | "cena" | "spuntino"
+
+    # Lista di ingredienti per la porzione BASE, es.
+    # [{"alimento": "petto di pollo", "quantita_g": 150}, {...}]
+    ingredienti = Column(JSON, nullable=False)
+
+    calorie_base = Column(Float, nullable=False)
+    proteine_base_g = Column(Float, nullable=True)
+    carboidrati_base_g = Column(Float, nullable=True)
+    grassi_base_g = Column(Float, nullable=True)
+
+    note = Column(String, nullable=True)  # es. brevi istruzioni di preparazione
