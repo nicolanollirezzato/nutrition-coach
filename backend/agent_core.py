@@ -6,7 +6,9 @@ HTTP al backend: chiamano direttamente le funzioni di crud.py, perché
 backend e agente vivono nello stesso servizio.
 """
 
+import json
 import os
+import time
 from datetime import date, timedelta
 
 import requests
@@ -18,6 +20,18 @@ import schemas
 from database import SessionLocal
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+
+# Numero massimo di tentativi e attesa (in secondi, raddoppia ad ogni tentativo)
+# quando Gemini risponde con un errore temporaneo (es. 503 "modello sovraccarico").
+GEMINI_MAX_RETRIES = 3
+GEMINI_RETRY_BASE_DELAY = 1
+
+# Riserva automatica: se Gemini continua a fallire, si passa a Groq (gratuito,
+# API compatibile OpenAI). Se GROQ_API_KEY non è impostata, la riserva è
+# semplicemente disattivata e l'errore di Gemini viene mostrato come prima.
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Chiave gratuita del database nutrizionale USDA FoodData Central.
 # DEMO_KEY funziona subito ma con limiti molto bassi (30 richieste/ora);
@@ -221,19 +235,23 @@ SET_MEAL_PLAN = {
     },
 }
 
-TOOLS = [
-    types.Tool(
-        function_declarations=[
-            GET_DAILY_BALANCE,
-            SEARCH_FOOD_NUTRITION,
-            LOG_MEAL,
-            LOG_ACTIVITY,
-            LOG_WEIGHT,
-            GET_WEIGHT_HISTORY,
-            GET_MEAL_PLAN,
-            SET_MEAL_PLAN,
-        ]
-    )
+RAW_TOOL_DEFINITIONS = [
+    GET_DAILY_BALANCE,
+    SEARCH_FOOD_NUTRITION,
+    LOG_MEAL,
+    LOG_ACTIVITY,
+    LOG_WEIGHT,
+    GET_WEIGHT_HISTORY,
+    GET_MEAL_PLAN,
+    SET_MEAL_PLAN,
+]
+
+# Formato per Gemini (google-genai)
+TOOLS = [types.Tool(function_declarations=RAW_TOOL_DEFINITIONS)]
+
+# Formato per Groq (compatibile OpenAI): stessa descrizione, wrapper diverso
+GROQ_TOOLS = [
+    {"type": "function", "function": tool_def} for tool_def in RAW_TOOL_DEFINITIONS
 ]
 
 
@@ -480,11 +498,105 @@ def execute_tool(name: str, tool_input: dict) -> dict:
     raise ValueError(f"Tool sconosciuto: {name}")
 
 
-def run_turn(contents: list, system_prompt: str) -> tuple[list, str]:
+def _is_transient_error(exc: Exception) -> bool:
+    """
+    Riconosce errori temporanei di Gemini (es. 503 "modello sovraccarico",
+    429 "troppe richieste") per cui ha senso riprovare automaticamente,
+    invece di errori permanenti (es. chiave API sbagliata, richiesta malformata).
+    """
+    status_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if status_code in (503, 429):
+        return True
+    testo = str(exc).upper()
+    return "UNAVAILABLE" in testo or "OVERLOADED" in testo or "RESOURCE_EXHAUSTED" in testo
+
+
+def _generate_with_retry(contents: list, config: types.GenerateContentConfig):
+    """
+    Chiama Gemini riprovando automaticamente sugli errori temporanei, con
+    attesa crescente (1s, 2s, 4s) prima di ogni nuovo tentativo. Se dopo
+    tutti i tentativi l'errore persiste, lo rilancia così l'utente riceve
+    comunque un messaggio chiaro invece di un blocco silenzioso.
+    """
+    ultimo_errore = None
+    for tentativo in range(GEMINI_MAX_RETRIES):
+        try:
+            return client.models.generate_content(
+                model=MODEL,
+                contents=contents,
+                config=config,
+            )
+        except Exception as e:
+            ultimo_errore = e
+            if not _is_transient_error(e) or tentativo == GEMINI_MAX_RETRIES - 1:
+                raise
+            time.sleep(GEMINI_RETRY_BASE_DELAY * (2 ** tentativo))
+    raise ultimo_errore
+
+
+def run_turn_groq(user_text: str, system_prompt: str) -> str:
+    """
+    Riserva usata quando Gemini continua a fallire dopo i tentativi. Gestisce
+    un turno "singolo" (senza la cronologia completa di Gemini, per restare
+    semplice): il modello vede comunque tutti i dati reali dell'utente
+    tramite gli stessi tool, quindi la risposta resta accurata anche se la
+    conversazione "sente" un piccolo salto di contesto in quel turno.
+    """
+    if not GROQ_API_KEY:
+        raise RuntimeError("Nessuna riserva disponibile: GROQ_API_KEY non impostata")
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_text},
+    ]
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+
+    for _ in range(6):  # limite di sicurezza sui giri di tool use
+        resp = requests.post(
+            GROQ_API_URL,
+            headers=headers,
+            json={
+                "model": GROQ_MODEL,
+                "messages": messages,
+                "tools": GROQ_TOOLS,
+                "tool_choice": "auto",
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        message = resp.json()["choices"][0]["message"]
+        messages.append(message)
+
+        tool_calls = message.get("tool_calls")
+        if not tool_calls:
+            return message.get("content") or ""
+
+        for tool_call in tool_calls:
+            name = tool_call["function"]["name"]
+            args = json.loads(tool_call["function"]["arguments"] or "{}")
+            try:
+                result = execute_tool(name, args)
+            except Exception as e:
+                result = {"errore": str(e)}
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
+            )
+
+    return "Non sono riuscito a completare la richiesta, riprova tra poco."
+
+
+def run_turn(contents: list, system_prompt: str, user_text: str | None = None) -> tuple[list, str]:
     """
     Gestisce un turno di conversazione, incluso l'eventuale ciclo di function
     calling. `contents` è la cronologia nel formato del SDK google-genai.
     Ritorna (contents_aggiornati, testo_risposta_finale).
+
+    Se Gemini continua a fallire dopo i tentativi automatici e `user_text` è
+    disponibile, passa alla riserva Groq per quel turno.
     """
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
@@ -492,11 +604,16 @@ def run_turn(contents: list, system_prompt: str) -> tuple[list, str]:
     )
 
     while True:
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=contents,
-            config=config,
-        )
+        try:
+            response = _generate_with_retry(contents, config)
+        except Exception:
+            if user_text is not None and GROQ_API_KEY:
+                reply = run_turn_groq(user_text, system_prompt)
+                contents.append(
+                    types.Content(role="model", parts=[types.Part.from_text(text=reply)])
+                )
+                return contents, reply
+            raise
 
         candidate = response.candidates[0]
         contents.append(candidate.content)

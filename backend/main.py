@@ -174,7 +174,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
 
     try:
         updated_history, reply = await asyncio.to_thread(
-            agent_core.run_turn, history, system_prompt
+            agent_core.run_turn, history, system_prompt, text
         )
         conversations[chat_id] = updated_history
     except Exception as e:
