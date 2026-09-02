@@ -13,12 +13,11 @@ Per collegare Telegram, dopo il deploy imposta il webhook una volta sola:
     https://api.telegram.org/bot<IL_TUO_TOKEN>/setWebhook?url=https://<il-tuo-servizio>.onrender.com/telegram/webhook
 """
 
-import asyncio
 import os
 from datetime import date
 
 import requests
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Depends, HTTPException, Request
 from google.genai import types
 from sqlalchemy.orm import Session
 
@@ -26,7 +25,7 @@ import models
 import schemas
 import crud
 import agent_core
-from database import engine, get_db
+from database import engine, get_db, SessionLocal
 
 # Crea le tabelle se non esistono già (per un progetto più maturo si
 # userebbe Alembic per le migrazioni, ma per l'MVP va benissimo così)
@@ -142,13 +141,16 @@ def send_telegram_message(chat_id: int, text: str) -> None:
 
 
 @app.post("/telegram/webhook")
-async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     """
     Riceve gli aggiornamenti che Telegram invia dopo aver configurato il
-    webhook (vedi istruzioni nel docstring del modulo). Sostituisce il bot
-    "in polling" usato in locale: qui è Telegram a contattarci via HTTP,
-    invece che il contrario, il che permette di girare come normale
-    servizio web (compatibile col piano gratuito di Render).
+    webhook (vedi istruzioni nel docstring del modulo). Risponde SUBITO a
+    Telegram (entro pochi millisecondi) e processa il messaggio vero e
+    proprio in un task in background: comporre un piano settimanale può
+    richiedere decine di secondi (molte chiamate a ricette/USDA), e se
+    Telegram non riceve una risposta abbastanza in fretta RITENTA l'invio
+    dello stesso messaggio, causando elaborazioni doppie e risposte
+    duplicate. Rispondere subito elimina questo problema alla radice.
     """
     update = await request.json()
     message = update.get("message")
@@ -158,7 +160,20 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
 
     chat_id = message["chat"]["id"]
     text = message["text"].strip()
+    from_info = message.get("from", {})
 
+    background_tasks.add_task(_processa_messaggio_telegram, chat_id, text, from_info)
+    return {"ok": True}
+
+
+def _processa_messaggio_telegram(chat_id: int, text: str, from_info: dict) -> None:
+    """
+    Logica vera del webhook, eseguita in background (fuori dal ciclo di
+    richiesta/risposta HTTP con Telegram). Apre una propria sessione DB
+    perché quella iniettata da FastAPI nella richiesta originale non è
+    più valida una volta che la risposta HTTP è già stata inviata.
+    """
+    db = SessionLocal()
     try:
         user = crud.get_user_by_telegram_chat_id(db, str(chat_id))
 
@@ -168,7 +183,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                     chat_id, f"Bentornato! Sei già collegato all'utente #{user.id}."
                 )
             else:
-                nome = message.get("from", {}).get("first_name", "Utente")
+                nome = from_info.get("first_name", "Utente")
                 nuovo_utente = crud.create_user_with_telegram(db, str(chat_id), nome)
                 send_telegram_message(
                     chat_id,
@@ -177,26 +192,23 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                     "Da ora puoi chiedermi cose come 'quante calorie mi restano oggi?' "
                     "oppure dirmi cosa hai mangiato.",
                 )
-            return {"ok": True}
+            return
 
         if user is None:
             send_telegram_message(chat_id, "Prima di iniziare, scrivi /start per registrarti.")
-            return {"ok": True}
+            return
 
         system_prompt = agent_core.build_system_prompt(user.id)
         history = _tronca_cronologia(conversations.setdefault(chat_id, []))
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
         try:
-            updated_history, reply = await asyncio.to_thread(
-                agent_core.run_turn, history, system_prompt, text
-            )
+            updated_history, reply = agent_core.run_turn(history, system_prompt, text)
             conversations[chat_id] = _tronca_cronologia(updated_history)
         except Exception as e:
             reply = f"Si è verificato un errore parlando con l'agente: {e}"
 
         send_telegram_message(chat_id, reply)
-        return {"ok": True}
 
     except Exception as e:
         # Rete di sicurezza: qualsiasi errore imprevisto (es. connessione al
@@ -208,4 +220,5 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
             )
         except Exception:
             pass
-        return {"ok": True}
+    finally:
+        db.close()
