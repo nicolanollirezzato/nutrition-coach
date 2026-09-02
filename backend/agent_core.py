@@ -11,6 +11,7 @@ import os
 import time
 from datetime import date, timedelta
 
+import anthropic
 import requests
 from google import genai
 from google.genai import types
@@ -27,12 +28,20 @@ MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_MAX_RETRIES = 3
 GEMINI_RETRY_BASE_DELAY = 1
 
-# Riserva automatica: se Gemini continua a fallire, si passa a Groq (gratuito,
-# API compatibile OpenAI). Se GROQ_API_KEY non è impostata, la riserva è
-# semplicemente disattivata e l'errore di Gemini viene mostrato come prima.
+# Prima riserva: Groq (gratuito, API compatibile OpenAI). Se GROQ_API_KEY non
+# è impostata, questa riserva è semplicemente disattivata.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# Seconda riserva (a pagamento, ma molto economica): Claude Haiku, usata solo
+# se anche Groq fallisce. Se ANTHROPIC_API_KEY non è impostata, questa
+# riserva è semplicemente disattivata e il comportamento resta invariato.
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_MAX_RETRIES = 3
+CLAUDE_RETRY_BASE_DELAY = 1
+claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
 # Chiave gratuita del database nutrizionale USDA FoodData Central.
 # DEMO_KEY funziona subito ma con limiti molto bassi (30 richieste/ora);
@@ -275,6 +284,17 @@ TOOLS = [types.Tool(function_declarations=RAW_TOOL_DEFINITIONS)]
 # Formato per Groq (compatibile OpenAI): stessa descrizione, wrapper diverso
 GROQ_TOOLS = [
     {"type": "function", "function": tool_def} for tool_def in RAW_TOOL_DEFINITIONS
+]
+
+# Formato per Claude (Anthropic): stessa descrizione, chiave "input_schema"
+# invece di "parameters" — unica differenza rispetto agli altri due formati.
+ANTHROPIC_TOOLS = [
+    {
+        "name": tool_def["name"],
+        "description": tool_def["description"],
+        "input_schema": tool_def["parameters"],
+    }
+    for tool_def in RAW_TOOL_DEFINITIONS
 ]
 
 
@@ -750,6 +770,95 @@ def run_turn_groq(user_text: str, system_prompt: str) -> str:
     return "Non sono riuscito a completare la richiesta, riprova tra poco."
 
 
+def _is_transient_anthropic_error(exc: Exception) -> bool:
+    """Come _is_transient_error, ma per le eccezioni del SDK Anthropic."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code in (503, 429, 529):  # 529 = "overloaded_error" di Anthropic
+        return True
+    testo = str(exc).upper()
+    return "OVERLOADED" in testo or "RATE_LIMIT" in testo
+
+
+def _claude_create_with_retry(messages: list, system_blocks: list):
+    """Chiama Claude riprovando sugli errori temporanei, stessa logica delle altre riserve."""
+    ultimo_errore = None
+    for tentativo in range(CLAUDE_MAX_RETRIES):
+        try:
+            return claude_client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=1500,
+                system=system_blocks,
+                tools=ANTHROPIC_TOOLS,
+                messages=messages,
+            )
+        except Exception as e:
+            ultimo_errore = e
+            if not _is_transient_anthropic_error(e) or tentativo == CLAUDE_MAX_RETRIES - 1:
+                raise
+            time.sleep(CLAUDE_RETRY_BASE_DELAY * (2 ** tentativo))
+    raise ultimo_errore
+
+
+def run_turn_claude(user_text: str, system_prompt: str) -> str:
+    """
+    Seconda riserva, usata solo se anche Groq fallisce. Il system prompt è
+    marcato con cache_control: essendo lungo e identico ad ogni chiamata,
+    dopo la prima volta le richieste successive pagano solo il 10% del
+    prezzo normale su quella parte (prompt caching di Anthropic).
+    """
+    if claude_client is None:
+        raise RuntimeError("Nessuna riserva disponibile: ANTHROPIC_API_KEY non impostata")
+
+    system_blocks = [
+        {
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    messages = [{"role": "user", "content": user_text}]
+
+    for _ in range(6):  # limite di sicurezza sui giri di tool use
+        response = _claude_create_with_retry(messages, system_blocks)
+
+        blocchi_assistente = [
+            (
+                {"type": "text", "text": blocco.text}
+                if blocco.type == "text"
+                else {
+                    "type": "tool_use",
+                    "id": blocco.id,
+                    "name": blocco.name,
+                    "input": blocco.input,
+                }
+            )
+            for blocco in response.content
+        ]
+        messages.append({"role": "assistant", "content": blocchi_assistente})
+
+        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+        if not tool_use_blocks:
+            testo = "".join(b.text for b in response.content if b.type == "text")
+            return testo
+
+        risultati_tool = []
+        for blocco in tool_use_blocks:
+            try:
+                result = execute_tool(blocco.name, dict(blocco.input))
+            except Exception as e:
+                result = {"errore": str(e)}
+            risultati_tool.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": blocco.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
+            )
+        messages.append({"role": "user", "content": risultati_tool})
+
+    return "Non sono riuscito a completare la richiesta, riprova tra poco."
+
+
 def run_turn(contents: list, system_prompt: str, user_text: str | None = None) -> tuple[list, str]:
     """
     Gestisce un turno di conversazione, incluso l'eventuale ciclo di function
@@ -757,7 +866,8 @@ def run_turn(contents: list, system_prompt: str, user_text: str | None = None) -
     Ritorna (contents_aggiornati, testo_risposta_finale).
 
     Se Gemini continua a fallire dopo i tentativi automatici e `user_text` è
-    disponibile, passa alla riserva Groq per quel turno.
+    disponibile, prova prima la riserva Groq, poi Claude Haiku come ultima
+    risorsa (nell'ordine: gratuito -> gratuito -> economico a pagamento).
     """
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
@@ -767,19 +877,33 @@ def run_turn(contents: list, system_prompt: str, user_text: str | None = None) -
     while True:
         try:
             response = _generate_with_retry(contents, config)
-        except Exception as errore_gemini:
+        except Exception:
+            reply = None
+            errori_riserve = []
+
             if user_text is not None and GROQ_API_KEY:
                 try:
                     reply = run_turn_groq(user_text, system_prompt)
                 except Exception as errore_groq:
-                    raise RuntimeError(
-                        "i sistemi AI (Gemini e la riserva Groq) sono entrambi "
-                        "momentaneamente sovraccarichi. Riprova tra qualche minuto."
-                    ) from errore_groq
+                    errori_riserve.append(f"Groq: {errore_groq}")
+
+            if reply is None and user_text is not None and ANTHROPIC_API_KEY:
+                try:
+                    reply = run_turn_claude(user_text, system_prompt)
+                except Exception as errore_claude:
+                    errori_riserve.append(f"Claude: {errore_claude}")
+
+            if reply is not None:
                 contents.append(
                     types.Content(role="model", parts=[types.Part.from_text(text=reply)])
                 )
                 return contents, reply
+
+            if errori_riserve:
+                raise RuntimeError(
+                    "tutti i sistemi AI disponibili (Gemini e le riserve configurate) "
+                    "sono momentaneamente non disponibili. Riprova tra qualche minuto."
+                )
             raise
 
         candidate = response.candidates[0]
