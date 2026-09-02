@@ -143,6 +143,16 @@ def get_daily_balance(db: Session, user_id: int, day: date_type) -> schemas.Dail
         .scalar()
     )
 
+    proteine_assunte, carboidrati_assunti, grassi_assunti = (
+        db.query(
+            func.coalesce(func.sum(models.Meal.proteine_g), 0.0),
+            func.coalesce(func.sum(models.Meal.carboidrati_g), 0.0),
+            func.coalesce(func.sum(models.Meal.grassi_g), 0.0),
+        )
+        .filter(models.Meal.user_id == user_id, models.Meal.data == day)
+        .first()
+    )
+
     numero_pasti = (
         db.query(func.count(models.Meal.id))
         .filter(models.Meal.user_id == user_id, models.Meal.data == day)
@@ -153,6 +163,14 @@ def get_daily_balance(db: Session, user_id: int, day: date_type) -> schemas.Dail
         user.obiettivo_calorico_giornaliero + calorie_bruciate - calorie_assunte
     )
 
+    # I target di macronutrienti vivono nel piano alimentare, non nell'utente:
+    # se non esiste un piano, i campi restano None (nessun target da rispettare).
+    piano = get_meal_plan(db, user_id)
+
+    proteine_target = piano.proteine_target_g if piano else None
+    carboidrati_target = piano.carboidrati_target_g if piano else None
+    grassi_target = piano.grassi_target_g if piano else None
+
     return schemas.DailyBalance(
         user_id=user_id,
         data=day,
@@ -161,7 +179,17 @@ def get_daily_balance(db: Session, user_id: int, day: date_type) -> schemas.Dail
         calorie_assunte=calorie_assunte,
         calorie_residue=calorie_residue,
         numero_pasti_registrati=numero_pasti,
+        proteine_target_g=proteine_target,
+        proteine_assunte_g=proteine_assunte,
+        proteine_residue_g=(proteine_target - proteine_assunte) if piano else None,
+        carboidrati_target_g=carboidrati_target,
+        carboidrati_assunti_g=carboidrati_assunti,
+        carboidrati_residui_g=(carboidrati_target - carboidrati_assunti) if piano else None,
+        grassi_target_g=grassi_target,
+        grassi_assunti_g=grassi_assunti,
+        grassi_residui_g=(grassi_target - grassi_assunti) if piano else None,
     )
+
 
 
 # ---------- Peso ----------

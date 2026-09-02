@@ -88,6 +88,18 @@ class DailyBalance(BaseModel):
     calorie_residue: float
     numero_pasti_registrati: int
 
+    # Macronutrienti: presenti solo se l'utente ha un piano alimentare attivo
+    # con target di macro impostati (altrimenti restano None).
+    proteine_target_g: Optional[float] = None
+    proteine_assunte_g: Optional[float] = None
+    proteine_residue_g: Optional[float] = None
+    carboidrati_target_g: Optional[float] = None
+    carboidrati_assunti_g: Optional[float] = None
+    carboidrati_residui_g: Optional[float] = None
+    grassi_target_g: Optional[float] = None
+    grassi_assunti_g: Optional[float] = None
+    grassi_residui_g: Optional[float] = None
+
 
 # ---------- Peso ----------
 

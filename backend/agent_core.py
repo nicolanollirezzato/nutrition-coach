@@ -48,10 +48,14 @@ client = genai.Client()  # legge GEMINI_API_KEY dall'ambiente
 GET_DAILY_BALANCE = {
     "name": "get_daily_balance",
     "description": (
-        "Restituisce il bilancio calorico di un utente per una data specifica: "
-        "obiettivo calorico, calorie bruciate con l'attività, calorie assunte dai "
-        "pasti registrati e calorie residue. Usa questo tool ogni volta che l'utente "
-        "chiede quante calorie gli restano, quante ne ha consumate o bruciate."
+        "Restituisce il bilancio calorico E dei macronutrienti (proteine, "
+        "carboidrati, grassi) di un utente per una data specifica: obiettivo, "
+        "quanto consumato finora, quanto resta. I campi macro sono presenti "
+        "solo se esiste un piano alimentare attivo con target impostati. Usa "
+        "questo tool ogni volta che l'utente chiede quante calorie/proteine/"
+        "carboidrati/grassi gli restano, quante ne ha consumate o bruciate, "
+        "o quando devi valutare come riadattare i pasti rimanenti della "
+        "giornata in base a cosa ha già mangiato."
     ),
     "parameters": {
         "type": "object",
@@ -234,11 +238,15 @@ SET_MEAL_PLAN = {
             "pasti_suggeriti": {
                 "type": "string",
                 "description": (
-                    "Piano pasti concreto in testo strutturato, es. "
-                    "'Colazione: 40g avena + 200ml latte + 1 banana (~350 kcal)\\n"
-                    "Pranzo: 150g petto di pollo + 80g riso + verdure (~550 kcal)\\n"
-                    "Cena: ...\\nSpuntini: ...'. Componi porzioni realistiche "
-                    "che sommate si avvicinino a calorie_target."
+                    "Piano pasti SETTIMANALE completo, organizzato per giorno "
+                    "della settimana con pasti diversi ogni giorno (non "
+                    "ripetuti). Struttura attesa: una sezione per ciascun "
+                    "giorno (Lunedì, Martedì, ... Domenica), e dentro ogni "
+                    "giorno le sezioni Colazione/Spuntino/Pranzo/Spuntino/"
+                    "Cena con alimenti e quantità precise. Ogni giorno deve "
+                    "sommare a circa calorie_target. Esempio struttura:\\n"
+                    "'LUNEDÌ\\nColazione: ... (~xxx kcal)\\nPranzo: ...\\n"
+                    "Cena: ...\\n\\nMARTEDÌ\\nColazione: ...\\n...'"
                 ),
             },
             "note": {
@@ -274,8 +282,19 @@ def build_system_prompt(user_id: int) -> str:
     """
     Il system prompt include già lo user_id della conversazione, così l'utente
     non deve mai ripeterlo e il modello sa sempre per chi sta chiamando i tool.
+    Include anche la data odierna: necessaria per capire richieste come
+    "cosa mangiamo stasera?" rispetto a un piano pasti settimanale, ed è
+    indispensabile soprattutto quando risponde Groq (che, a differenza di
+    Gemini, non ha alcuna nozione della data corrente).
     """
+    giorni_settimana = [
+        "lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica",
+    ]
+    oggi = date.today()
+    giorno_corrente = giorni_settimana[oggi.weekday()]
+
     return (
+        f"Oggi è {giorno_corrente} {oggi.strftime('%d/%m/%Y')}.\n\n"
         "Sei un coach nutrizionale amichevole e diretto. Rispondi sempre in italiano, "
         "in modo breve e concreto. Usa i tool a disposizione per leggere o aggiornare "
         "i dati reali dell'utente: non inventare mai numeri sulle calorie residue o "
@@ -284,11 +303,6 @@ def build_system_prompt(user_id: int) -> str:
         "interpretarlo come 'nessun dato trovato' — riporta all'utente il messaggio "
         "di errore esatto che hai ricevuto, così può essere risolto. Un errore "
         "tecnico e 'non esiste ancora nulla' sono due cose diverse.\n\n"
-        "DIAGNOSTICA TEMPORANEA: se get_meal_plan restituisce piano=None, "
-        "includi SEMPRE nella tua risposta, testualmente, i valori delle chiavi "
-        "debug_user_id_interrogato e debug_totale_piani_nel_db così come li hai "
-        "ricevuti dal tool — è temporaneo per risolvere un problema tecnico, "
-        "l'utente lo sa e li sta aspettando.\n\n"
         "Quando l'utente descrive un pasto:\n"
         "1. Identifica gli alimenti principali e le quantità (se l'utente non dà "
         "le quantità, assumi porzioni standard ragionevoli e dillo chiaramente).\n"
@@ -319,10 +333,12 @@ def build_system_prompt(user_id: int) -> str:
         "3. Salva il piano con set_meal_plan.\n"
         "4. Se l'utente chiede anche pasti concreti (colazione/pranzo/cena/"
         "spuntini) e non solo i numeri target, componi un piano pasti "
-        "realistico che sommato si avvicini a calorie_target: usa "
-        "search_food_nutrition per alimenti reali con quantità precise, poi "
-        "salvalo nel campo pasti_suggeriti di set_meal_plan (testo "
-        "strutturato per pasto, con calorie indicative per ciascuno).\n"
+        "SETTIMANALE (7 giorni diversi, non lo stesso ripetuto) che ogni "
+        "giorno sommi circa a calorie_target: usa search_food_nutrition per "
+        "alimenti reali con quantità precise, varia gli alimenti tra un "
+        "giorno e l'altro per rendere il piano sostenibile, poi salvalo nel "
+        "campo pasti_suggeriti di set_meal_plan (testo strutturato per "
+        "giorno e per pasto, con calorie indicative per ciascuno).\n"
         "5. Ricorda sempre che non sei un medico o un nutrizionista: per "
         "condizioni mediche, gravidanza, disturbi alimentari o esigenze "
         "particolari, l'utente deve rivolgersi a un professionista — dillo "
@@ -333,25 +349,28 @@ def build_system_prompt(user_id: int) -> str:
         "di crearne uno.\n\n"
         "CONSULTAZIONE RAPIDA (es. 'cosa mangiamo stasera?', 'cosa c'è a "
         "pranzo oggi?'):\n"
+        "Sai già che giorno è oggi (vedi inizio di queste istruzioni). "
         "Chiama get_meal_plan e rispondi SOLO con la parte pertinente di "
-        "pasti_suggeriti (es. solo la cena se chiede 'stasera', solo il "
-        "pranzo se chiede 'a pranzo'), senza rigenerare o riscrivere tutto "
-        "il piano. 'Stasera'/'a cena' = cena, 'oggi a pranzo'/'a mezzogiorno' "
-        "= pranzo, 'colazione'/'al mattino' = colazione. Se non esiste "
-        "ancora un piano pasti concreto, dillo e offriti di crearne uno.\n\n"
+        "pasti_suggeriti per IL GIORNO DELLA SETTIMANA CORRENTE (es. se "
+        "oggi è martedì e chiede 'stasera', cerca la sezione di martedì e "
+        "dai solo la cena di quel giorno), senza rigenerare o riscrivere "
+        "tutto il piano. 'Stasera'/'a cena' = cena, 'oggi a pranzo'/'a "
+        "mezzogiorno' = pranzo, 'colazione'/'al mattino' = colazione. Se "
+        "l'utente chiede di un altro giorno (es. 'cosa mangio venerdì?'), "
+        "usa quel giorno invece di oggi. Se non esiste ancora un piano "
+        "pasti concreto, dillo e offriti di crearne uno.\n\n"
         "LISTA DELLA SPESA:\n"
         "Quando l'utente chiede la lista della spesa (es. 'fammi la lista "
         "della spesa', 'cosa devo comprare per la settimana'):\n"
         "1. Chiama get_meal_plan per leggere pasti_suggeriti.\n"
         "2. Se non esiste un piano pasti concreto, dillo e offriti prima di "
         "crearne uno (senza quello non puoi generare una lista sensata).\n"
-        "3. Assumi che il piano si ripeta per tutti i giorni della "
-        "settimana (7 giorni), a meno che l'utente non specifichi "
-        "diversamente (es. 'solo per 3 giorni').\n"
-        "4. Moltiplica le quantità di ogni ingrediente per il numero di "
-        "giorni, poi consolida gli ingredienti uguali o molto simili "
-        "sommando le quantità (es. se compare pollo sia a pranzo che a "
-        "cena, sommali in una sola voce).\n"
+        "3. Il piano copre già 7 giorni diversi: somma gli ingredienti di "
+        "tutti i giorni presenti nel piano (non moltiplicare per 7, il "
+        "piano NON si ripete uguale ogni giorno).\n"
+        "4. Consolida gli ingredienti uguali o molto simili sommando le "
+        "quantità (es. se il pollo compare in più giorni, sommalo in una "
+        "sola voce).\n"
         "5. Presenta la lista organizzata per categoria (es. Proteine, "
         "Carboidrati/cereali, Frutta e verdura, Latticini, Dispensa/altro), "
         "con quantità totali arrotondate in modo pratico per la spesa (es. "
@@ -377,6 +396,39 @@ def build_system_prompt(user_id: int) -> str:
         "modifica e il perché, non silenziosamente.\n"
         "4. Non correggere il piano sulla base di un singolo giorno: servono "
         "più giorni/settimane di dati per un trend affidabile.\n\n"
+        "RIADATTAMENTO IN TEMPO REALE (giornaliero) — quando l'utente ti dice "
+        "cosa ha mangiato (specialmente se fuori piano, una porzione più "
+        "grande, un pasto saltato) e vuoi/deve aiutarlo a restare in linea "
+        "per il resto della giornata:\n"
+        "1. Dopo aver registrato il pasto con log_meal, chiama "
+        "get_daily_balance per il giorno corrente: ora include anche i "
+        "residui di proteine/carboidrati/grassi, non solo le calorie.\n"
+        "2. Chiama get_meal_plan per vedere i pasti ancora da fare oggi "
+        "(usa la sezione del giorno della settimana corrente).\n"
+        "3. Se i residui (calorie e/o macro) sono già molto bassi o "
+        "negativi rispetto ai pasti ancora previsti, suggerisci come "
+        "alleggerire i prossimi pasti (es. porzioni più piccole, meno "
+        "carboidrati o grassi a cena) mantenendo comunque un pasto "
+        "completo — non suggerire mai di saltare un pasto interamente o "
+        "scendere sotto le 1200 kcal totali giornaliere.\n"
+        "4. Se invece è avanzato margine (es. ha mangiato meno del previsto), "
+        "puoi suggerire di aumentare leggermente il pasto successivo.\n"
+        "5. Questi aggiustamenti sono per default solo CONSIGLI nella "
+        "conversazione (non serve salvare nulla con set_meal_plan): "
+        "modifica il piano salvato solo se l'utente esplicitamente chiede "
+        "di aggiornarlo in modo permanente per quel giorno.\n\n"
+        "RIADATTAMENTO SETTIMANALE — se l'utente segnala un giorno "
+        "significativamente sopra o sotto il target (es. un pasto fuori "
+        "molto abbondante, un evento) e chiede di 'recuperare' nei giorni "
+        "successivi:\n"
+        "1. Chiama get_meal_plan per vedere i giorni rimanenti della "
+        "settimana.\n"
+        "2. Distribuisci un piccolo aggiustamento (es. -100/-150 kcal per "
+        "2-3 giorni, non un taglio drastico in un solo giorno) sui pasti "
+        "dei giorni successivi, spiegando la logica.\n"
+        "3. Anche qui, aggiorna pasti_suggeriti con set_meal_plan solo se "
+        "l'utente conferma di volerlo salvare così; altrimenti è un "
+        "consiglio verbale per quella settimana.\n\n"
         f"L'utente con cui stai parlando ha user_id={user_id}: usalo sempre nei tool, "
         "anche se l'utente non lo specifica."
     )
@@ -454,6 +506,15 @@ def execute_tool(name: str, tool_input: dict) -> dict:
                 "calorie_assunte": balance.calorie_assunte,
                 "calorie_residue": balance.calorie_residue,
                 "numero_pasti_registrati": balance.numero_pasti_registrati,
+                "proteine_target_g": balance.proteine_target_g,
+                "proteine_assunte_g": balance.proteine_assunte_g,
+                "proteine_residue_g": balance.proteine_residue_g,
+                "carboidrati_target_g": balance.carboidrati_target_g,
+                "carboidrati_assunti_g": balance.carboidrati_assunti_g,
+                "carboidrati_residui_g": balance.carboidrati_residui_g,
+                "grassi_target_g": balance.grassi_target_g,
+                "grassi_assunti_g": balance.grassi_assunti_g,
+                "grassi_residui_g": balance.grassi_residui_g,
             }
         except ValueError as e:
             return {"errore": str(e)}
@@ -534,14 +595,7 @@ def execute_tool(name: str, tool_input: dict) -> dict:
         try:
             plan = crud.get_meal_plan(db, tool_input["user_id"])
             if plan is None:
-                # Info diagnostica temporanea: fa capire se il problema è il
-                # valore di user_id usato nella query o l'assenza reale del dato.
-                totale_piani = db.query(models.MealPlan).count()
-                return {
-                    "piano": None,
-                    "debug_user_id_interrogato": tool_input["user_id"],
-                    "debug_totale_piani_nel_db": totale_piani,
-                }
+                return {"piano": None}
             return {
                 "piano": {
                     "obiettivo": plan.obiettivo,
