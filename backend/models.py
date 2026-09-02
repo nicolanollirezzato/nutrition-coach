@@ -19,6 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Text,
     JSON,
+    Boolean,
 )
 from sqlalchemy.orm import relationship
 
@@ -37,6 +38,12 @@ class Household(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String, nullable=True)
+
+    # Se True, coordina TUTTI e tre i pasti principali (colazione, pranzo,
+    # cena) tra i membri della famiglia, non solo la cena (comportamento
+    # di default quando questo campo è False).
+    sincronizza_tutti_pasti = Column(Boolean, nullable=False, default=False)
+
     creato_at = Column(DateTime, default=datetime.utcnow)
 
     membri = relationship("User", back_populates="household")

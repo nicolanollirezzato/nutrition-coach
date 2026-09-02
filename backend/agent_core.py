@@ -424,15 +424,41 @@ GET_HOUSEHOLD_MEMBERS = {
     "name": "get_household_members",
     "description": (
         "Restituisce gli altri membri del nucleo familiare dell'utente "
-        "(id e nome), se presente. Lista vuota se l'utente non è collegato "
-        "a nessuna famiglia. USA SEMPRE questo prima di generare la lista "
-        "della spesa o comporre la cena, per sapere se coordinare con "
-        "altri membri."
+        "(id e nome) e se la famiglia ha attivato la sincronizzazione di "
+        "TUTTI i pasti principali (sincronizza_tutti_pasti: se False, "
+        "coordina solo la cena; se True, coordina anche colazione e "
+        "pranzo). Lista vuota se l'utente non è collegato a nessuna "
+        "famiglia. USA SEMPRE questo prima di generare la lista della "
+        "spesa o comporre un piano pasti, per sapere se e quanto "
+        "coordinare con altri membri."
     ),
     "parameters": {
         "type": "object",
         "properties": {"user_id": {"type": "integer"}},
         "required": ["user_id"],
+    },
+}
+
+SET_HOUSEHOLD_MEAL_SYNC = {
+    "name": "set_household_meal_sync",
+    "description": (
+        "Attiva o disattiva, per TUTTA la famiglia dell'utente, la "
+        "sincronizzazione di tutti e tre i pasti principali (colazione, "
+        "pranzo, cena) — invece della sola cena, che è il comportamento "
+        "di default. Usa questo quando l'utente chiede esplicitamente di "
+        "sincronizzare/condividere anche colazione e pranzo con la "
+        "famiglia (non solo la cena)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_id": {"type": "integer"},
+            "attiva": {
+                "type": "boolean",
+                "description": "true per sincronizzare tutti i pasti, false per tornare alla sola cena",
+            },
+        },
+        "required": ["user_id", "attiva"],
     },
 }
 
@@ -453,6 +479,7 @@ RAW_TOOL_DEFINITIONS = [
     SET_USER_PROFILE,
     JOIN_HOUSEHOLD,
     GET_HOUSEHOLD_MEMBERS,
+    SET_HOUSEHOLD_MEAL_SYNC,
 ]
 
 # Formato per Gemini (google-genai)
@@ -598,19 +625,28 @@ def build_system_prompt(user_id: int) -> str:
         "l'altro per rendere il piano sostenibile, poi salva tutto nel "
         "campo pasti_suggeriti di set_meal_plan (testo strutturato per "
         "giorno e per pasto, con calorie indicative).\n"
-        "4bis. COORDINAMENTO CENA IN FAMIGLIA: prima di comporre la cena "
+        "4bis. COORDINAMENTO PASTI IN FAMIGLIA: prima di comporre il piano "
         "di ogni giorno, chiama get_household_members. Se l'utente ha "
-        "familiari collegati, chiama get_meal_plan per ciascuno e guarda "
-        "se hanno già una cena pianificata per quel giorno che cita il "
-        "nome di una ricetta della libreria. Se sì, usa la STESSA ricetta "
-        "per la cena di questo utente (comodo per cucinare un solo piatto "
-        "in famiglia), scalando le quantità al SUO target calorico "
-        "individuale (diverso da quello degli altri membri). Se nessun "
-        "familiare ha ancora una cena pianificata per quel giorno, scegli "
-        "tu una ricetta normalmente e menzionalo nella nota del pasto, "
-        "così gli altri membri della famiglia potranno riprenderla quando "
-        "comporranno il loro piano. Questo si applica solo alla cena, non "
-        "necessariamente agli altri pasti.\n"
+        "familiari collegati, guarda il campo sincronizza_tutti_pasti "
+        "restituito:\n"
+        "   - Se è False (default): applica il coordinamento SOLO alla "
+        "cena.\n"
+        "   - Se è True: applica lo stesso coordinamento a TUTTI e tre i "
+        "pasti principali (colazione, pranzo, cena) — non agli spuntini.\n"
+        "Per ciascun pasto da coordinare: chiama get_meal_plan per ogni "
+        "familiare e guarda se ha già quel pasto pianificato per quel "
+        "giorno con il nome di una ricetta della libreria. Se sì, usa la "
+        "STESSA ricetta anche per questo utente (comodo per cucinare un "
+        "solo piatto in famiglia), scalando le quantità al SUO target "
+        "individuale (calorico e di macro, diverso da quello degli altri "
+        "membri). Se nessun familiare ha ancora quel pasto pianificato per "
+        "quel giorno, scegli tu una ricetta normalmente e menzionalo nella "
+        "nota, così gli altri membri potranno riprenderla quando "
+        "comporranno il loro piano.\n"
+        "Se l'utente chiede esplicitamente di sincronizzare/condividere "
+        "anche colazione e pranzo con la famiglia (non solo la cena), "
+        "chiama set_household_meal_sync con attiva=true. Se chiede di "
+        "tornare a sincronizzare solo la cena, chiamalo con attiva=false.\n"
         "5. Ricorda sempre che non sei un medico o un nutrizionista: per "
         "condizioni mediche, gravidanza, disturbi alimentari o esigenze "
         "particolari, l'utente deve rivolgersi a un professionista — dillo "
@@ -637,12 +673,14 @@ def build_system_prompt(user_id: int) -> str:
         "alla famiglia di Anna'), chiama join_household con il nome "
         "indicato. Se il tool restituisce un errore per nome ambiguo o "
         "non trovato, chiedi di specificare meglio. Dopo il collegamento, "
-        "spiega che da ora condividerete la lista della spesa e potrete "
-        "avere la stessa cena coordinata, ma che peso/obiettivo/piano "
-        "restano comunque individuali. All'inizio di una richiesta di "
-        "lista della spesa o di composizione del piano, chiama sempre "
-        "get_household_members per sapere se l'utente ha familiari "
-        "collegati.\n\n"
+        "spiega che da ora condividerete la lista della spesa e la cena "
+        "sarà coordinata (stessa ricetta, porzioni individuali) — e che "
+        "possono chiedere di estendere il coordinamento anche a colazione "
+        "e pranzo se preferiscono. Peso/obiettivo/piano restano comunque "
+        "individuali. All'inizio di una richiesta di lista della spesa o "
+        "di composizione del piano, chiama sempre get_household_members "
+        "per sapere se l'utente ha familiari collegati e se ha attivato "
+        "la sincronizzazione di tutti i pasti.\n\n"
         "LISTA DELLA SPESA:\n"
         "Quando l'utente chiede la lista della spesa (es. 'fammi la lista "
         "della spesa', 'cosa devo comprare per la settimana'):\n"
@@ -1104,8 +1142,28 @@ def execute_tool(name: str, tool_input: dict) -> dict:
         try:
             membri = crud.get_household_members(db, tool_input["user_id"])
             if not membri:
-                return {"membri": [], "nota": "L'utente non fa parte di nessun nucleo familiare"}
-            return {"membri": [{"id": m.id, "nome": m.nome} for m in membri]}
+                return {
+                    "membri": [],
+                    "sincronizza_tutti_pasti": None,
+                    "nota": "L'utente non fa parte di nessun nucleo familiare",
+                }
+            sync = crud.get_household_sync_setting(db, tool_input["user_id"])
+            return {
+                "membri": [{"id": m.id, "nome": m.nome} for m in membri],
+                "sincronizza_tutti_pasti": sync,
+            }
+        finally:
+            db.close()
+
+    if name == "set_household_meal_sync":
+        db = SessionLocal()
+        try:
+            risultato = crud.set_household_sync_setting(
+                db, tool_input["user_id"], bool(tool_input["attiva"])
+            )
+            if risultato is None:
+                return {"errore": "L'utente non fa parte di nessun nucleo familiare"}
+            return {"sincronizza_tutti_pasti": risultato}
         finally:
             db.close()
 

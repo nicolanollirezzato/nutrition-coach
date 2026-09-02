@@ -141,6 +141,31 @@ def get_household_members(db: Session, user_id: int) -> list[models.User]:
     )
 
 
+def get_household_sync_setting(db: Session, user_id: int) -> bool | None:
+    """
+    True/False se l'utente ha una famiglia (sincronizza tutti i pasti o
+    solo la cena), None se l'utente non fa parte di nessuna famiglia.
+    """
+    user = get_user(db, user_id)
+    if user is None or user.household_id is None:
+        return None
+    household = db.query(models.Household).filter(models.Household.id == user.household_id).first()
+    return household.sincronizza_tutti_pasti if household else None
+
+
+def set_household_sync_setting(db: Session, user_id: int, valore: bool) -> bool | None:
+    """Attiva/disattiva la sincronizzazione di tutti i pasti per l'intera famiglia dell'utente."""
+    user = get_user(db, user_id)
+    if user is None or user.household_id is None:
+        return None
+    household = db.query(models.Household).filter(models.Household.id == user.household_id).first()
+    if household is None:
+        return None
+    household.sincronizza_tutti_pasti = valore
+    db.commit()
+    return household.sincronizza_tutti_pasti
+
+
 
 # ---------- Activity ----------
 
