@@ -800,6 +800,25 @@ def execute_tool(name: str, tool_input: dict) -> dict:
     raise ValueError(f"Tool sconosciuto: {name}")
 
 
+def _execute_tool_logged(name: str, tool_input: dict) -> dict:
+    """
+    Esegue un tool e stampa sempre nei log del server (visibili su Render,
+    scheda "Logs") qualunque errore capiti — sia un'eccezione imprevista sia
+    un errore già gestito e restituito come {"errore": ...}. Senza questo,
+    un fallimento silenzioso di un tool è invisibile: l'agente lo trasforma
+    in un messaggio all'utente, ma nessuna traccia tecnica arriva ai log.
+    """
+    try:
+        result = execute_tool(name, tool_input)
+    except Exception as e:
+        print(f"[TOOL EXCEPTION] {name}({tool_input}) -> {e}", flush=True)
+        return {"errore": str(e)}
+
+    if isinstance(result, dict) and "errore" in result:
+        print(f"[TOOL ERROR] {name}({tool_input}) -> {result['errore']}", flush=True)
+    return result
+
+
 def _is_transient_error(exc: Exception) -> bool:
     """
     Riconosce errori temporanei di Gemini (es. 503 "modello sovraccarico",
@@ -897,10 +916,7 @@ def run_turn_groq(user_text: str, system_prompt: str) -> str:
         for tool_call in tool_calls:
             name = tool_call["function"]["name"]
             args = json.loads(tool_call["function"]["arguments"] or "{}")
-            try:
-                result = execute_tool(name, args)
-            except Exception as e:
-                result = {"errore": str(e)}
+            result = _execute_tool_logged(name, args)
             messages.append(
                 {
                     "role": "tool",
@@ -985,10 +1001,7 @@ def run_turn_claude(user_text: str, system_prompt: str) -> str:
 
         risultati_tool = []
         for blocco in tool_use_blocks:
-            try:
-                result = execute_tool(blocco.name, dict(blocco.input))
-            except Exception as e:
-                result = {"errore": str(e)}
+            result = _execute_tool_logged(blocco.name, dict(blocco.input))
             risultati_tool.append(
                 {
                     "type": "tool_result",
@@ -1065,10 +1078,7 @@ def run_turn(contents: list, system_prompt: str, user_text: str | None = None) -
 
         response_parts = []
         for call in function_calls:
-            try:
-                result = execute_tool(call.name, dict(call.args))
-            except Exception as e:
-                result = {"errore": str(e)}
+            result = _execute_tool_logged(call.name, dict(call.args))
 
             response_parts.append(
                 types.Part.from_function_response(name=call.name, response=result)
